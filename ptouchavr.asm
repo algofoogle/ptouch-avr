@@ -78,15 +78,19 @@
 .equ M_TPH_CLK,     (1<<TPH_CLK)
 .equ M_SENSE,       (1<<SENSE)
 ; Reserved registers:
-; Graphics data pointer:
-.equ GR,    24      ; Name for use with MOVW.
-.equ GL,    24
-.equ GH,    25
-
+; We've reserved these registers for specific global uses:
 .equ BYTE_COUNT,    18
 .equ DATA_BUFFER,   19
 .equ OUT_BUFFER,    20
 .equ BIT_COUNT,     21
+; Line counter WORD:
+.equ LCR,           22      ; Name for use with SBIW.
+.equ LCL,           22
+.equ LCH,           23
+; Graphics data pointer:
+.equ GR,            24      ; Name for use with MOVW.
+.equ GL,            24
+.equ GH,            25
 
 ; ------------------------------- Interrupt table -------------------------------;
 
@@ -139,6 +143,10 @@ init:
     ; stored in Program Memory, beginning at the 'pixel_data' label.
     ldi GH, hi8(pixel_data)
     ldi GL, lo8(pixel_data)
+
+    ; Set up the number of lines that are defined in pixel_data:
+    ldi LCH, (end_pixel_data-pixel_data)>>11
+    ldi LCL, ((end_pixel_data-pixel_data)>>3) & 0xFF
 
     ; Set up the Z (16-bit) pointer to be an address pointer to the
     ; "Line ACTIVE Window" ISR. Basically, the first time-out will call the ISR
@@ -211,60 +219,133 @@ sleep_loop:
 
 line_active_isr:
     ; Raise CLK for (a):
-    sbi PORTB, TPH_CLK      ; 1K
+    sbi PORTB, TPH_CLK      ; 2K
 
-; OK, so CLK has JUST gone high at this point...
-; If we now count the cycles between here and the moment it next goes
-; low (just after the OUT spi_begin_bit), we should count 86...
+; 0K
 
-; (a) Early delay, with CLK high: a = A-g = 21K ~= 2.188us
+    ; OK, so CLK has JUST gone high at this point...
+    ; If we now count the cycles between here and the moment it next goes
+    ; low (just after the OUT spi_begin_bit), we should count 86...
+
+    ; (a) Early delay, with CLK high:
     ; Point Z to start of this line's data:
     movw ZR, GR             ; 1K
     ; Set byte count to 8:
     ldi BYTE_COUNT, 8       ; 1K
     ; Wait out remainder of (a), i.e. a-2K = 19K
-    micro_delay 6           ; 18K
+    micro_delay 7           ; 21K
     nop                     ; 1K
+
 next_byte:
-; (8B) Byte load/write loop: 8B = 8(g+8b+c) = 8(g+17c) = 1880K = 195.833us
+
+; 24K, 259K, 494K, 729K, 964K, 1199K, 1434K, 1669K
+
+    ; (8B) Byte load/write loop: 8B = 8(g+8b+c) = 8(g+17c) = 1880K = 195.833us
     ; Wait out MOST of (g), except for a little bit of data prep to pad it out afterwards:
-    micro_delay 18          ; 54K
+    micro_delay 17          ; 51K
     ; Set bit count to 8:
     ldi BIT_COUNT, 8        ; 1K
-    ; Load a byte that we need to push out:
+    ; Load a byte that we need to push out, incrementing Z at the same time:
     lpm DATA_BUFFER, Z+     ; 3K
+
 next_bit:
-    ; Prep the data we'll write directly to PORTB, in r20:
-    ; TPH_LATCH = 1; TPH_STROBE = 1; TPH_CLK = 0; TPH_DATA = C; SENSE = 0.
+
+;  79K,  99K, 119K, 139K, 159K, 179K, 199K, 219K
+; 314K                                  ... 454K
+; 549K                                  ... 689K
+;                                       ... 924K
+;                                       ... 1159K
+;                                       ... 1394K
+;                                       ... 1629K
+;                                       ... 1864K
+
+    ; Prep the data we'll write directly to PORTB, in a register.
+    ; We do this so we'll be able to change the state of CLK and DATA simultaneously.
+    ; /LATCH=1; /STROBE=1; CLK=0; DATA=C; SENSE=0.
     ldi OUT_BUFFER, M_TPH_LATCH | M_TPH_STROBE ; 1K
     ; Load the bit we need to push out, into C, starting with MSB:
     rol DATA_BUFFER         ; 1K
-    brcc data_bit_low       ; 2K if C clear.
-data_bit_high:
-    ; Make DATA pin go high:
+    brcc spi_begin_bit      ; 2K if C clear (i.e. if DATA pin stays low)
+    ; Need to make sure DATA pin will go high:
     ori OUT_BUFFER, M_TPH_DATA     ; 1K
-    rjmp spi_begin_bit      ; 2K
-data_bit_low:
-    ; Keep DATA pin low:
-    nop                     ; 1K ...
-    nop                     ; 1K ...dummy padding.
 spi_begin_bit:
-    ; Write r20 to PORTB, hence setting CLK and DATA states simultaneously:
+    adiw ZR, 0              ; 2K - pad ONLY
+    ; Write register-buffered pin states to PORTB, hence setting CLK and DATA states simultaneously:
     out PORTB, OUT_BUFFER   ; 1K
+
+;  86K, 106K, 126K, 146K, 166K, 186K, 206K, 226K
+; 321K                                  ... 461K
+; 556K                                  ... 696K
+;                                       ... 931K
+;                                       ... 1166K
+;                                       ... 1401K
+;                                       ... 1636K
+;                                       ... 1871K
+
     ; Now wait 10K and make CLK go high:
-    micro_delay 3           ; 9K
-    sbi PORTB, TPH_CLK      ; 1K
+    lpm                     ; 3K - pad ONLY
+    lpm                     ; 3K - pad ONLY
+    adiw ZR, 0              ; 2K - pad ONLY
+    sbi PORTB, TPH_CLK      ; 2K
+
+;  96K, 116K, 136K, 156K, 176K, 196K, 216K, 236K
+; 331K, 351K, 371K, 391K, 411K, 431K, 451K, 471K
+; 566K                                  ... 706K
+;                                       ... 941K
+;                                       ... 1176K
+;                                       ... 1411K
+;                                       ... 1646K
+;                                       ... 1881K
+
     ; Now check if we have any more bits left...
     dec BIT_COUNT           ; 1K
     brne next_bit           ; 2K
-    ; By this point, we're 2 cycles into 10 of the final CLK high state
-    ; before we wait an extra (c) and then start another byte,
-    ; starting with another (g).
+    ; By this point, we're 2 cycles into 10 of the *FINAL* CLK high state,
+    ; which is then followed by another (c), for a total of 2K spent out of 20K...
     micro_delay 5           ; 15K
+    nop                     ; 1K
+    ; /LATCH, /STROBE, and CLK are already high as required.
+    ; Ensure DATA is high, too, in preparation for clocking out a byte.
+    ; This is done here to fix loop timing, while also ensuring that
+    ; the DATA line is in the correct state after the last iteration.
+    sbi PORTB, TPH_DATA     ; 2K
+
+; 256K, 491K, 726K, 961K, 1196K, 1431K, 1666K, 1901K
+
     dec BYTE_COUNT          ; 1K
-    brne next_byte          ; 2K ; TPH_DATA must ALREADY be high by this point, but it's NOT!!!@@@@@
-    ; NOTE: We must make TPH_DATA go high IMMEDIATELY here, with 1 cycle:
-    ; ...?
+    brne next_byte          ; 2K
+
+; 1903K
+
+    ; Now wait out the remainder of g+t and then pull CLK low again.
+    micro_delay 28          ; 84K
+    nop                     ; 1K
+    cbi PORTB, TPH_CLK      ; 2K
+
+; 1990K
+
+    ; Wait out R (78K), and then pulse /LATCH for 18K
+    micro_delay 25          ; 75K
+    nop                     ; 1K
+    cbi PORTB, TPH_LATCH    ; 2K
+    micro_delay 5           ; 15K
+    nop                     ; 1K
+    sbi PORTB, TPH_LATCH    ; 2K
+
+; 2086K
+
+    ; Wait out W (23K) and then lower /STROBE
+    micro_delay 7           ; 21K
+    cbi PORTB, TPH_STROBE   ; 2K
+
+; 2109K
+
+    ; At this point, /STROBE is now lowered, and we can update:
+    ;   *   GR <- Load with the value now in Z.
+    ;   *   Z <- Point to "Line IDLE Window" ISR.
+    ;   *   Change OCR0A to 55.
+
+;; ..................
 
 
 
@@ -487,3 +568,5 @@ pixel_data:
     .byte 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000
     .byte 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000
     .byte 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000
+
+end_pixel_data:
