@@ -5,7 +5,41 @@
 ;
 ; Description::
 ;
-;   ...TBC...
+;   This is prototype AVR firmware for driving the Kyocera KSH64FA TPH (Thermal Printhead)
+;   as used in the Brother PT-1000 and PT-1010 hand-held label printers. It is
+;   intended to accompany an article I'm writing on "Brother PT-1010 Hacking"
+;   at my blog, http://anton.maurovic.com.
+;
+;   The behaviour spec for how this is to be used is:
+;
+;   1.  The printer is powered on.
+;   2.  The MCU powers on, initialises, and goes idle.
+;   3.  Start the printer on a run of (say) 30 random characters JUST to get
+;       the tape rolling.
+;   4.  Press a button attached to the MCU to signal that it should start.
+;   5.  MCU renders a 64-line test pattern (which allows us to measure the resolution,
+;       coverage, and aspect ratio of the dots).
+;   6.  MCU then waits for another button press, after which it will repeat step 4 onwards.
+;
+;   The detailed technical spec for this firmware is as follows:
+;
+;   1.  The MCU is powered by the regulated 3.3V supply (VCC) provided by the printer.
+;   2.  When the printer is powered on (and hence the MCU), the MCU should go thru an
+;       init routine that:
+;       a.  Sets PB0, PB2, PB3, and PB4 to be outputs, and asserts the correct signals
+;           for each (corresponding to control lines of the TPH) such that CLK is low,
+;           and DATA, /LATCH, and /STROBE are all high.
+;       b.  Calibrates the MCU's internal oscillator to approx. 9.6MHz (which will use
+;           a pre-determined and tested calibration value for 3.3V operation).
+;       c.  Configures a timer and interrupt that can be used to time stages of the
+;           14.4ms line rendering cycle. Timer is initially *stopped*, though.
+;       d.  Sets PB1 to be an input (internally pulled high).
+;       e.  Configures an interrupt on PB1.
+;   3.  The MCU then waits for PB1 to be pulled low. When that happens, PB1's interrupt
+;       then gets turned off, and the timer is started.
+;   4.  The timer interrupt is responsible for reading data from Program Memory and
+;       sending it to the TPH at the correct rate, hence rendering a 64x64 test pattern.
+;   5.  At the end of 64 lines, the timer is disabled, and PB1's interrupt is re-enabled.
 ;
 ; Burning info::
 ;
@@ -14,6 +48,10 @@
 ; ***    EEPROM:         Not used
 ;
 ; Usage info::
+;
+;   This is AVR Assembly code, written using the GNU "as" assembler syntax, and
+;   specifically "avr-as" as is installed with avr-gcc. It targets the ATtiny13A
+;   initially, but should work with most other larger ATtiny variants.
 ;
 ;   It is wise to ensure there is a 100nF bypass capacitor strapped between
 ;   VCC and GND of the MCU.
@@ -61,6 +99,23 @@
 ;   the P-Touch's motor engages, and hence know the right time to start controlling
 ;   the TPH. It could otherwise be used to sense a manual button-press.
 ;
+; Quick visual test:
+;
+;   If you have an LED and 330-ohm resistor in series between the /STROBE (PB4, pin 3)
+;   line and VCC, then the LED should be off when the MCU is initially powered on.
+;   When you press the button, the line print routine should kick in, and the LED
+;   should be lit (at mid brightness) for about 1 second: 64 x 14.4ms ~= 0.9 seconds.
+;   If it's lit for nearly 2 seconds (or longer) it means the INT0 interrupt
+;   flagged twice, back to back. This ideally shouldn't happen since:
+;
+;   1.  The very start of the button ISR should disable INT0,
+;       so that it no longer gets flagged until we're ready;
+;   2.  The end of the line printing test should clear the button interrupt sense flag,
+;       so that pressing the button a 2nd time during the print run will have no effect
+;       anyway even if point 1 fails;
+;   3.  Even if the button is held down, INT0 is only ever set to trigger on a falling
+;       edge, rather than when the pin is simply at a low level.
+;
 
 .include "t13.asm"
 .include "macros.asm"
@@ -70,7 +125,7 @@
 .equ TPH_LATCH,     PB3
 .equ TPH_DATA,      PB0
 .equ TPH_CLK,       PB2
-.equ SENSE,         PB1 ; NOT USED YET.
+.equ SENSE,         PB1
 ; MASK bit versions of the above:
 .equ M_TPH_STROBE,  (1<<TPH_STROBE)
 .equ M_TPH_LATCH,   (1<<TPH_LATCH)
@@ -84,13 +139,19 @@
 .equ OUT_BUFFER,    20
 .equ BIT_COUNT,     21
 ; Line counter WORD:
-.equ LCR,           22      ; Name for use with SBIW.
-.equ LCL,           22
-.equ LCH,           23
+.equ LCR,           XR      ; Name for use with SBIW.
+.equ LCL,           XL
+.equ LCH,           XH
 ; Graphics data pointer:
-.equ GR,            24      ; Name for use with MOVW.
-.equ GL,            24
-.equ GH,            25
+.equ GR,            YR      ; Name for use with MOVW.
+.equ GL,            YL
+.equ GH,            YH
+
+; General parameters:
+.equ ACTIVE_TIMEOUT,55      ; The "Line ACTIVE window" lasts for 55 timer ticks (55*1024 CPU cycles) => 5.87ms
+.equ IDLE_TIMEOUT,  80      ; The "Line IDLE window" lasts 80 ticks => 8.53ms
+.equ OSCCAL_TARGET, 0x6E    ; OSCCAL value of 0x6E seems to be closes to 9.6MHz on my ATtiny13A at 5V.
+
 
 ; ------------------------------- Interrupt table -------------------------------;
 
@@ -102,7 +163,7 @@ firmware_top:
 ; Interrupt no. 7 (Timer Compare Match A) does special handling depending on which step
 ; of the repeating 14.4ms cycle it has reached. The other 8 interrupts all just return
 ; without doing anything.
-    reti                        ; Interrupt Vector 2   = EXT_INT0   (External Interrupt Request 0)
+    rjmp int0_isr               ; Interrupt Vector 2   = EXT_INT0   (External Interrupt Request 0)
     reti                        ; Interrupt Vector 3   = PCINT0     (Pin Change)
     reti                        ; Interrupt Vector 4   = TIM0_OVF   (Timer Overflow)
     reti                        ; Interrupt Vector 5   = EE_RDY     (EEPROM Ready)
@@ -116,58 +177,83 @@ firmware_top:
 ; ------------------------------- Main Initialisation -------------------------------;
 
 init:
-    ; I've determined that an OSCCAL value of 0x6E gives the best approximation
-    ; of 9.6MHz on my ATtiny13A at 5V.
-    slide_osccal 0x6E
+    ; Disable interrupts:
+    cli
 
-    ; Make the CPU clock run at full speed:
-    disable_clock_prescaler
-
-    init_stack
-
-    ; From power-on, the MCU's pins should all be inputs. Before we change them to
+    ; At power-on, the MCU's pins should all be inputs. Before we change them to
     ; outputs, we want to make sure they'll assert the correct states.
-    ; /STROBE, /LATCH, and DATA should all be high. The rest should be low:
-    ldi r17, M_TPH_STROBE | M_TPH_LATCH | M_TPH_DATA
+    ; /STROBE, /LATCH, and DATA should all be high. The rest should be low, but
+    ; we also set M_SENSE (which will be an input) so that its internal pull-up
+    ; is enabled:
+    ldi r17, M_TPH_STROBE | M_TPH_LATCH | M_TPH_DATA | M_SENSE
     out PORTB, r17
 
     ; Set all pins (except SENSE) to be outputs:
-    ldi r16, ~SENSE
+    ldi r16, ~M_SENSE
     out DDRB, r16
     nop ; Synchronise.
 
     ; Output prior pin state again, just in case it was lost when changing DDRB:
     out PORTB, r17
 
-    ; Set up our 'G' pointer to point to the start of our pixel data block, as
-    ; stored in Program Memory, beginning at the 'pixel_data' label.
-    ldi GH, hi8(pixel_data)
-    ldi GL, lo8(pixel_data)
+    ; Gradually adjust OSCCAL until it reaches our target calibration value:
+    slide_osccal OSCCAL_TARGET
 
-    ; Set up the number of lines that are defined in pixel_data:
-    ldi LCH, (end_pixel_data-pixel_data)>>11
-    ldi LCL, ((end_pixel_data-pixel_data)>>3) & 0xFF
+    ; Make the CPU clock run at full speed:
+    disable_clock_prescaler
 
-    ; Set up the Z (16-bit) pointer to be an address pointer to the
-    ; "Line ACTIVE Window" ISR. Basically, the first time-out will call the ISR
-    ; which loads line data and fires the heater of the TPH.
-    ldi ZH, pm_hi8(line_active_isr)
-    ldi ZL, pm_lo8(line_active_isr)
+    init_stack
 
-    ; Configure timer to generate an interrupt after 80 counts (or 8.53ms).
-    ; That is, after 80/(CLK/1024) seconds =>
-    ;   80/(9600000/1024) = 0.0085333... ~= 8.53ms
-    ;
-    init_simple_timer clk_1024, 80
-    ; NOTE: The timer has now started.
+    ; Configure INT0 to fire on the falling edge of the INT0 pin (PB1):
+    enable_int0 int0_falling
 
 sleep_loop:
+    ; Enable interrupts:
+    sei
     ; Enable "Idle" sleep mode:
     enable_sleep
     ; Sleep -- basically, halt the CPU and let interrupts fire when required:
     sleep
     ; I think we get here when a RETI occurs from within an ISR.
     rjmp sleep_loop
+
+
+; ------------------------------- INT0 (Button Pressed) ISR -------------------------------;
+
+int0_isr:
+    ; Button was pressed...
+    ; Disable the interrupt so a button press won't do anything until it's re-enabled
+    ; after printing all lines that we need.
+    disable_int0
+
+    ; Set up our 'G' pointer to point to the start of our pixel data block, as
+    ; stored in Program Memory, beginning at the 'pixel_data' label.
+    ; ldi GH, hi8(pixel_data)
+    ; ldi GL, lo8(pixel_data)
+    ldiw_data GR, pixel_data
+
+    ; Set up the number of lines that are defined in pixel_data
+    ; (i.e. no. of bytes in the data table, divided by 8):
+    ; ldi LCH, (end_pixel_data-pixel_data)>>11
+    ; ldi LCL, ((end_pixel_data-pixel_data)>>3) & 0xFF
+    ldiw LCR, (end_pixel_data-pixel_data)>>3
+
+    ; Set up the Z (16-bit) pointer to be an address pointer to the
+    ; "Line ACTIVE Window" ISR. Basically, the first time-out will call the ISR
+    ; which loads line data and fires the heater of the TPH.
+    ; ldi ZH, pm_hi8(line_active_isr)
+    ; ldi ZL, pm_lo8(line_active_isr)
+    ldiw_code ZR, line_active_isr
+
+    ; Configure timer to generate an interrupt after 80 counts (or 8.53ms).
+    ; That is, after 80/(CLK/1024) seconds =>
+    ;   80*1024/9600000 = 0.0085333... ~= 8.53ms
+    ;
+    init_simple_timer clk_1024, IDLE_TIMEOUT
+    ; NOTE: The timer should now be started.
+    ; NOTE: Interrupts are globally enabled, automatically, after RETI:
+    reti
+
 
 
 ; ------------------------------- Line ACTIVE Window ISR -------------------------------;
@@ -340,187 +426,63 @@ spi_begin_bit:
 
 ; 2109K
 
-    ; At this point, /STROBE is now lowered, and we can update:
-    ;   *   GR <- Load with the value now in Z.
-    ;   *   Z <- Point to "Line IDLE Window" ISR.
-    ;   *   Change OCR0A to 55.
+    ; At this point, /STROBE is now lowered, so prepare the next stage...
 
-;; ..................
-
-
-
-    
-; This is an ISR that handles 
-; (i.e. interrupt generated when when Timer/Counter 0 hits a given limit
-; in OCR0A). This is currently configured to fire every 2ms.
-; 
-; This ISR uses the Z pointer with a jump table to jump to the stage it
-; currently needs to process. After that, it increments (or resets) the
-; Z pointer as required. These are the events that happen at specific
-; times in the cycle:
-;
-;   *   After 2ms (1 interrupt), while PB0 is high, we want to do some
-;       proof-of-concept "work".
-;   *   After 10ms (4 more interrupts), we want to pull PB0 low.
-;   *   After 14ms (2 more interrupts), we want to pull PB0 high again
-;       and reset the interrupt counter.
-;
-; For the time while we're NOT in this ISR, the main program is just in SLEEP
-; mode, so the MCU is idling. We COULD potentially do other work during this
-; time but I have nothing for it to do at the moment.
-;
-timer_isr:
-    ; Jump to whichever point in the jump table is currently indicated by
-    ; the Z pointer. The landing address represents a stage of the 7
-    ; stages of the cycle.
-    ijmp                        ; 2 cycles.
-
-_timer_isr_jumps:
-    ; This is a jump table. Depending on how many times the interrupt has
-    ; fired already, the IJMP above will land on one of these 7 slots --
-    ; -- the 7th will reset the Z pointer to the start of the jump table.
-    ; Note that each RJMP here adds 2 cycles to the ISR lead-in time:
-                                ; 2 cycles each...
-    rjmp _timer_isr_act_toggle  ; 1st interrupt (2ms passed): PB1 -> high.
-    rjmp _timer_isr_step        ; 2: Nothing to do;           PB1 still high.
-    rjmp _timer_isr_act_toggle  ; 3rd interrupt (6ms passed): PB1 -> low.
-    rjmp _timer_isr_do_work     ; 4th interrupt (8ms passed): Do some work.
-    rjmp _timer_isr_10ms        ; 5th interrupt (10ms passed): pull PB0 low.
-    rjmp _timer_isr_step        ; 6: Nothing to do.
-    .if ((. - firmware_top)>>1 >= 0x0100)
-        ; Our implementation doesn't use ZH for the jump table, so we can't
-        ; have any part of the jump table beyond PC address 0x0100:
-        .error "_timer_isr's jump table is not located wholly under 0x0100 address"
-    .endif
-_timer_isr_end_cycle:
-    ; This is the landing address of the 7th interrupt of the cycle, having
-    ; reached the 14ms mark...
-    ; NOTE: The next 2 instructions sync I/O with all other execution
-    ; paths by matching the same CPU cycle count as for one of the RJMPs above.
-    nop                                 ; 1 cycle.
-    ; Reset Z pointer to the start of the jump table:
-    ldi ZL, pm_lo8(_timer_isr_jumps)    ; 1 cycle.
-    ; 14ms has elapsed...
-    ; Pull PB0 high again:
-    sbi PORTB, PB0
-    ; Exit the ISR:
-    reti
-
-_timer_isr_act_toggle:
-    ; When PB1 is not being used as the DATA channel in _timer_isr_do_work,
-    ; it is being driven high for a period of 4ms out of 14ms. This is so it
-    ; can drive an indicator LED, which shows that we're alive and kicking.
-    ; This "toggle" event is called twice per each 14ms cycle -- once at the
-    ; 2ms mark to turn the LED on, and once again at 6ms to turn it off.
-    sbi PINB, PB1
-    rjmp _timer_isr_step
-
-_timer_isr_do_work:
-    ; 2ms has elapsed...
-
-    ; This routine reads a sequence of 8 bytes from within the Flash ROM
-    ; Program Memory of the MCU, and writes each bit of each
-    ; byte out -- MSB first -- using a 200kHz SPI approach.
-    ; That is, each bit is clocked at 5us intervals. There is a gap
-    ; of 20us between the LSB of one byte, and the MSB of the next.
-    ; If you add that all up:
-    ;   (8 bits * 5us + 20us) * 8 bytes
-    ;   => The cycle is complete in 480us.
-
-    ; Push Z onto the stack, because we need to mess with it here...
-    push ZL
-    push ZH     ; NOTE: We could leave this out, and just
-                ; assume that ZH will stay at 0, always, or
-                ; at least verify that it *starts* at 0 before
-                ; the loop, and then reset it to 0 after the
-                ; loop is done (i.e. "clr ZH" instead of "pop ZH").
-                ; This would shave at least 2 instructions,
-                ; and save 1 byte of stack (SRAM).
-                ; IN FACT, we know what the next step will be
-                ; in the jump table, so we could load its address
-                ; directly and even do away with the PUSH/POP
-                ; instructions completely:
-                ; * Delete 2xPUSH
-                ; * Delete "LDI ZH"
-                ; * Change final 2xPOP to 2xLDI.
-                ; ...which will save 3 instructions.
-    ; Now point Z to the data bytes (using BYTE addresses)
-    ; that we have in Program Memory:
-    ldi ZL, lo8(data)
-    ldi ZH, hi8(data)
-    ; We'll push out 8 bytes in total:
-    ldi r23, 8
-next_byte_loop:
-    ; Load a byte from the data bytes we have in Program Memory,
-    ; incrementing the Z pointer afterwards:
-    lpm r21, Z+                     ; 3 cycles.
-    ; Write out one bit at a time on PB1, starting with MSB...
-    ; 8 bits to shift out...
-    ldi r22, 8                      ; 1 cycle.
-next_bit_loop:
-    ; Rotate left, pushing MSB into Carry.
-    rol r21                         ; 1 cycle.
-    brcs out_hi_bit                 ; 1 cycle if bit 0, 2 if bit 1.
-    ; Bit is 0, so clear it on PB1:
-    nop                             ; 1 cycle (sync).
-    cbi PORTB, PB1                  ; 1 cycle.
-    rjmp bit_loop_check             ; 2 cycles.
-out_hi_bit:
-    ; Bit is 1, so set it on PB1:
-    sbi PORTB, PB1                  ; 1 cycle.
-    nop                             ; 1 cycle (sync).
-    nop                             ; 1 cycle (sync).
-bit_loop_check:
-    ; By this point, 6 cycles have been spent
-    ; (3 since commencing the SBI or CBI instruction).
-    ; We want to hold the PB1 (last output bit) state for 5us
-    ; (48 cycles, minus the overhead built in to each iteration of the loop):
-    ;   RequiredDelay = 48 - LoopHead - LoopTail
-    ;   = 48 - 6 - 3
-    ;   = 39 cycles we need to pad out:
-    precise_delay 12, 1             ; 3*(12+1)*1 = 39 cycles.
-    ; Check if we have more bits to loop thru, for this current byte:
-    dec r22                         ; 1 cycle.
-    brne next_bit_loop              ; 2 cycles.
-    ; When we reach THIS point, outside of the loop, 44 cycles have elapsed
-    ; since the last SBI or CBI instruction. We need to pad it out to 48
-    ; so that the final bit (of this byte) definitely lasts 5us.
-    nop
-    nop
-    nop
-    nop
-    ; Now we need to pull PB1 low (if it isn't already) and keep it there
-    ; for 20us (192 cycles) before the first bit of the next byte is
-    ; output. From cycle counting, we can tell that from the moment
-    ; PB1 drops low again (at this next instruction), there are 11 cycles
-    ; of overhead before the first bit of the NEXT byte can be output,
-    ; so if we want precise timing we need to pad with a delay of
-    ; 192-11=181 cycles.
-    cbi PORTB, PB1                  ; 1 cycle.
-    precise_delay 59, 1             ; 3*(59+1)*1 = 180 cycles.
-    nop                             ; 1 cycle.
-    ; Check if we have more bytes to pump out...
-    dec r23                         ; 1 cycle.
-    brne next_byte_loop             ; 2 cycles (unless all done).
-    ; All bytes are done. Bring back the original Z pointer
-    ; (jump table index) value from the stack:
-    pop ZH
-    pop ZL
-    ; Exit the ISR after incrementing the Z pointer:
-    rjmp _timer_isr_step
-
-_timer_isr_10ms:
-    ; 10ms has elapsed...
-    ; Make PB0 go low.
-    cbi PORTB, PB0
-
-_timer_isr_step:
-    ; Increment the Z pointer (as a 16-bit operation):
-    inc ZL
-_timer_isr_exit:
+    ; Save current pointer to the first byte of the next line (Z), in GR:
+    movw GR, ZR
+    ; Change ORC0A to 55, so that the next time the interrupt fires, it will
+    ; be after our CURRENT window of 55*1024/9600000 seconds (5.87ms) has
+    ; elapsed, and we're ready to bring /STROBE high again.
+    ldi r16, ACTIVE_TIMEOUT
+    out OCR0A, r16
+    ; Point Z to the "Line IDLE Window" ISR.
+    ldiw_code ZR, line_idle_isr
+    ; Now we can exit this ISR:
     reti
 
 
+; ------------------------------- Line IDLE Window ISR -------------------------------;
+
+;   This handles the window of 8.53ms at the end of the time during which /STROBE is
+;   required/permitted to be asserted. It raises /STROBE off (to stop the TPH's heater).
+;   It also decrements the line counter, then checks whether there are any lines left:
+;
+;   *   If there ARE lines left, it adjusts the timer to fire after 8.53ms so that
+;       the next line can then start after that. It then points Z to line_active_isr.
+;   *   If there are NO lines left, it disables the timer interrupt, clears the INT0
+;       flag, re-enables INT0, and returns. This ensures any prior button press is
+;       ignored, and allows INT0 to fire when the button is pressed next... which will
+;       then reset everything and re-enable the timer to start printing again.
+;
+
+line_idle_isr:
+    ; Raise /STROBE, so that it's no longer asserted:
+    sbi PORTB, TPH_STROBE
+    ; Decrement line counter:
+    sbiw LCR, 1
+    ; Are there any lines left?
+    brne more_lines_left
+    ; No more lines left...
+    ; Disable timer interrupt:
+    disable_timer
+    ; Clear INTF0 (flag of whether or not the interrupt has been asserted):
+    ; Writing a ONE to bit 6 (INTF0) of GIFR CLEARS it... I think this is
+    ; because it can't actually be set in software, and this ensures that
+    ; by writing a ZERO we don't have to touch any of the other bits:
+    in r16, GIFR
+    sbr r16, (1<<6)
+    out GIFR, r16
+    nop
+    ; Re-enable INT0 interrupt (using previous settings):
+    enable_int0 int0_falling
+    reti
+more_lines_left:
+    ; Change timer threshold to now fire after 80 ticks (8.53ms):
+    ldi r16, IDLE_TIMEOUT
+    out OCR0A, r16
+    ; Point Z to line_active_isr:
+    ldiw_code ZR, line_active_isr
+    reti
 
 
 pixel_data:
@@ -570,3 +532,4 @@ pixel_data:
     .byte 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000, 0b11111111, 0b00000000
 
 end_pixel_data:
+

@@ -143,14 +143,12 @@
 .equ clk_1024,  5
 .equ clk_xfall, 6
 .equ clk_xrise, 7
-.macro init_simple_timer csmode:req, t, r
-    ; Disable interrupts:
-    cli
+.macro init_simple_timer csmode:req, t, r, enabled=1
     ; Set TC sync mode; i.e. lock the timer's reset line.
     ldi r16, 0b10000001
     out GTCCR, r16
     ; Disable automatic output of the timer on the MCU's external pins,
-    ; and select CTC (WGM mode 2) to auto-clear timer when it hits \threshold.
+    ; and select CTC (WGM mode 2) to auto-clear timer when it hits \t (threshold).
     ldi r16, 0b00000010
     out TCCR0A, r16
     ldi r16, \csmode    ; Set Clock Source mode in bits 2..0.
@@ -175,10 +173,22 @@
     ; Reset timer value:
     clr r16
     out TCNT0, r16
+    .if \enabled == 1
+        ; Re-enable the prescaler and get the timer running:
+        out GTCCR, r16
+    .endif
+.endm
+
+.macro enable_timer
+    clr r16
     ; Re-enable the prescaler and get the timer running:
     out GTCCR, r16
-    ; Globally enable interrupts:
-    sei
+.endm
+
+.macro disable_timer
+    ; Set TC sync mode; i.e. lock the timer's reset line.
+    ldi r16, 0b10000001
+    out GTCCR, r16
 .endm
 
 ; This enables a given SLEEP mode. Default (if not specified)
@@ -188,7 +198,57 @@
 .equ sleep_powerdown,   0b10
 .macro enable_sleep mode=sleep_idle
     in r16, MCUCR           ; Read current MCU Control Register state.
-    ori r16, 0b00100000     ; Turn on SE (Sleep Enable) bit.
-    andi r16, 0b11100111    ; Turn off SM1..0 bits to select "Idle" sleep mode.
+    andi r16, 0b11100111    ; Mask out SM[1:0] bits.
+    ori r16, 0b00100000 | (\mode<<3) ; Turn on SE (Sleep Enable) bit, as well as SM[1:0] mode bits.
     out MCUCR, r16          ; Update MCUCR.
+.endm
+
+; Configure "Interrupt 0 Sense Control" (ISC[1:0]) mode for INT0.
+; NOTE: When used without a parameter (or -1), it only enables the INT0
+; interrupt and does NOT configure it.
+.equ int0_low,      0b00
+.equ int0_change,   0b01
+.equ int0_falling,  0b10
+.equ int0_rising,   0b11
+.macro enable_int0 mode=-1
+    .if \mode != -1
+        ; Configure INT0 sense:
+        in r16, MCUCR           ; Read current MCU Control Register state.
+        andi r16, 0b11111100    ; Mask out ISC0[1:0] bits.
+        ori r16, \mode          ; Configure ISC0[1:0] bits.
+        out MCUCR, r16          ; Update MCUCR.
+    .endif
+    ; Enable INT0:
+    in r16, GIMSK   ; Read existing GIMSK value.
+    sbr r16, (1<<6)      ; Turn on bit 6 (INT0 control bit).
+    out GIMSK, r16  ; Write value back to GIMSK.
+.endm
+
+.macro disable_int0
+    in r16, GIMSK   ; Read existing GIMSK value.
+    cbr r16, (1<<6)      ; Turn OFF bit 6 (INT0 control disabled).
+    out GIMSK, r16
+.endm
+
+; Load a register WORD pair with a given CODE address
+; (i.e. pointing to an instruction in Program Memory).
+.macro ldiw_code r:req, addr:req
+    ldi \r,     pm_lo8(\addr)
+    ldi \r+1,   pm_hi8(\addr)
+.endm
+
+.macro ldiw_data r:req, addr:req
+    ldi \r,     lo8(\addr)
+    ldi \r+1,   hi8(\addr)
+.endm
+
+.macro ldiw r:req, nval:req
+    ldi \r,     (\nval & 0xFF)
+    ldi \r+1,   (\nval >> 8)
+.endm
+
+.macro describe_nval nval:req
+    .ascii "LE:"
+    .byte (\nval & 0xFF)
+    .byte (\nval >> 8)
 .endm

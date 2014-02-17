@@ -6,8 +6,8 @@
 ;       *   32 Registers (R0-R31):  0x0000 - 0x001F (32 bytes).
 ;       *   64 I/O Registers:       0x0020 - 0x005F (64 bytes).
 ;       *   64 SRAM bytes:          0x0060 - 0x009F (64 bytes).
-;   *   Hence, RAMEND (typically used as top of stack) is 0x00A0.
-.equ RAMEND, 0x00A0
+;   *   Hence, RAMEND (typically used as top of stack) is 0x009F.
+.equ RAMEND, 0x009F
 
 .equ PORTB, 0x18    ; Port B output.
 .equ DDRB,  0x17    ; Port B direction bits.
@@ -17,6 +17,8 @@
 .equ SPL,   0x3d    ; Stack Pointer low byte (SPH not used on ATtiny13).
 .equ MCUCR, 0x35    ; MCU Control Register.
 .equ TIMSK0, 0x39   ; Timer 0 Interrupt Mask.
+.equ GIMSK,	0x3b	; General Interrupt Mask Register (INT0 & pin-change interrupts).
+.equ GIFR,	0x3a	; General Interrupt Flag Register.
 .equ GTCCR, 0x28    ; General Timer/Counter Control Register.
 .equ TCCR0A, 0x2f   ; Timer Control Register A.
 .equ TCCR0B, 0x33   ; Timer Control Register B.
