@@ -207,9 +207,10 @@ init:
     ; Configure INT0 to fire on the falling edge of the INT0 pin (PB1):
     enable_int0 int0_falling
 
-sleep_loop:
     ; Enable interrupts:
     sei
+
+sleep_loop:
     ; Enable "Idle" sleep mode:
     enable_sleep
     ; Sleep -- basically, halt the CPU and let interrupts fire when required:
@@ -347,8 +348,8 @@ next_bit:
 
     ; Prep the data we'll write directly to PORTB, in a register.
     ; We do this so we'll be able to change the state of CLK and DATA simultaneously.
-    ; /LATCH=1; /STROBE=1; CLK=0; DATA=C; SENSE=0.
-    ldi OUT_BUFFER, M_TPH_LATCH | M_TPH_STROBE ; 1K
+    ; /LATCH=1; /STROBE=1; CLK=0; DATA=C; SENSE=1 (for pull-up).
+    ldi OUT_BUFFER, M_TPH_LATCH | M_TPH_STROBE | M_SENSE; 1K
     ; Load the bit we need to push out, into C, starting with MSB:
     rol DATA_BUFFER         ; 1K
     brcc spi_begin_bit      ; 2K if C clear (i.e. if DATA pin stays low)
@@ -474,7 +475,7 @@ line_idle_isr:
     out GIFR, r16
     nop
     ; Re-enable INT0 interrupt (using previous settings):
-    enable_int0 int0_falling
+    enable_int0
     reti
 more_lines_left:
     ; Change timer threshold to now fire after 80 ticks (8.53ms):

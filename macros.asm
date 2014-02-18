@@ -247,8 +247,3 @@
     ldi \r+1,   (\nval >> 8)
 .endm
 
-.macro describe_nval nval:req
-    .ascii "LE:"
-    .byte (\nval & 0xFF)
-    .byte (\nval >> 8)
-.endm
