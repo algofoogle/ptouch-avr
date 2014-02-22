@@ -17,8 +17,8 @@
 .equ SPL,   0x3d    ; Stack Pointer low byte (SPH not used on ATtiny13).
 .equ MCUCR, 0x35    ; MCU Control Register.
 .equ TIMSK0, 0x39   ; Timer 0 Interrupt Mask.
-.equ GIMSK,	0x3b	; General Interrupt Mask Register (INT0 & pin-change interrupts).
-.equ GIFR,	0x3a	; General Interrupt Flag Register.
+.equ GIMSK, 0x3b    ; General Interrupt Mask Register (INT0 & pin-change interrupts).
+.equ GIFR,  0x3a    ; General Interrupt Flag Register.
 .equ GTCCR, 0x28    ; General Timer/Counter Control Register.
 .equ TCCR0A, 0x2f   ; Timer Control Register A.
 .equ TCCR0B, 0x33   ; Timer Control Register B.
@@ -49,3 +49,51 @@
 .equ ZL,    30
 .equ ZH,    31
 
+; CLKPR bits (6.4.2):
+.equ CLKPCE,        7               ; Clock Prescaler Change Enable
+.equ M_CLKPCE,      (1<<CLKPCE)
+.equ CLKPS_DIV1,    0b0000
+.equ CLKPS_DIV2,    0b0001
+.equ CLKPS_DIV4,    0b0010
+.equ CLKPS_DIV8,    0b0011
+.equ CLKPS_DIV16,   0b0100
+.equ CLKPS_DIV32,   0b0101
+.equ CLKPS_DIV64,   0b0110
+.equ CLKPS_DIV128,  0b0111
+.equ CLKPS_DIV256,  0b1000          ; NOTE: Values above this are reserved.
+
+; GIMSK bits (9.3.2):
+.equ INT0_EN,       6               ; INT0 enable.
+.equ M_INT0_EN,     (1<<INT0_EN)
+
+; MCUCR bits (9.3.1):
+.equ M_ISC,         0b00000011      ; ISC (Interrupt Sense Control) bit mask.
+.equ M_SM,          0b00011000      ; Sleep Mode mask.
+.equ SE,            5               ; Sleep Enable.
+.equ M_SE,          (1<<SE)
+
+; GTTCR (General Timer/Counter Control Register) bits (12.4.1):
+.equ TSM,           7               ; Timer/Counter Sync Mode.
+.equ M_TSM,         (1<<TSM)
+.equ PSR10,         0               ; Prescaler Reset Timer/Counter0
+.equ M_PSR10,       (1<<PSR10)
+
+; TCCR0A (11.9.1):
+.equ COM0_NONE,     0b00000000      ; "Normal" (OC0A disconnected).
+.equ COM0_TOGGLE,   0b01000000      ; Toggle OC0A on match.
+.equ COM0_CLEAR,    0b10000000      ; Clear OC0A on match.
+.equ COM0_SET,      0b11000000      ; Set OC0A on match.
+.equ WGM_NORMAL,    0b000
+.equ WGM_PWM,       0b001           ; PWM (Phase Correct) with 0xFF limit.
+.equ WGM_CTC,       0b010           ; CTC with OCRA.
+.equ WGM_FASTPWM,   0b011           ; Fast PWM with 0xFF limit.
+.equ WGM_PWM_OCRA,  0b101           ; PWM (Phase Correct) with OCRA limit.
+.equ WGM_FASTPWM_OCRA, 0b111        ; Fast PWM with OCRA limit.
+
+; TIMSK0 (11.9.6):
+.equ OCIE0A,        2               ; Timer/Counter0 Output Compare Match A Interrupt Enable
+.equ M_OCIE0A,      (1<<OCIE0A)
+
+; GIFR (9.3.3):
+.equ INTF0,         6               ; INT0 asserted flag?
+.equ M_INTF0,       (1<<INTF0)

@@ -16,10 +16,13 @@
 ;   2.  The MCU powers on, initialises, and goes idle.
 ;   3.  Start the printer on a run of (say) 30 random characters JUST to get
 ;       the tape rolling.
-;   4.  Press a button attached to the MCU to signal that it should start.
-;   5.  MCU renders a 64-line test pattern (which allows us to measure the resolution,
-;       coverage, and aspect ratio of the dots).
-;   6.  MCU then waits for another button press, after which it will repeat step 4 onwards.
+;   4.  The printer will be asserting the "/STROBE" control line of the TPH.
+;       This is actually used instead by the MCU as a line to sense when it
+;       should start driving the TPH.
+;   5.  MCU renders an image independently of whatever the printer is doing.
+;   6.  MCU then waits for another assertion of "/STROBE", which effectively
+;       indicates that another print run has started (or the prior one hasn't
+;       finished yet), and it should hence repeat its own print cycle.
 ;
 ;   The detailed technical spec for this firmware is as follows:
 ;
@@ -38,8 +41,8 @@
 ;   3.  The MCU then waits for PB1 to be pulled low. When that happens, PB1's interrupt
 ;       then gets turned off, and the timer is started.
 ;   4.  The timer interrupt is responsible for reading data from Program Memory and
-;       sending it to the TPH at the correct rate, hence rendering a 64x64 test pattern.
-;   5.  At the end of 64 lines, the timer is disabled, and PB1's interrupt is re-enabled.
+;       sending it to the TPH at the correct rate, hence rendering a pattern line-by-line.
+;   5.  At the end of the pattern, the timer is disabled, and PB1's interrupt is re-enabled.
 ;
 ; Burning info::
 ;
@@ -51,14 +54,15 @@
 ;
 ;   This is AVR Assembly code, written using the GNU "as" assembler syntax, and
 ;   specifically "avr-as" as is installed with avr-gcc. It targets the ATtiny13A
-;   initially, but should work with most other larger ATtiny variants.
+;   initially, but with some modifications should work with the ATtiny25/45/85
+;   variants.
 ;
 ;   It is wise to ensure there is a 100nF bypass capacitor strapped between
 ;   VCC and GND of the MCU.
 ;
 ;   To avoid accidentally asserting any lines of the TPH before the MCU reaches
-;   a stable state, pull-up resistors should be used on all digital pins that
-;   interface with the TPH. I'm not sure yet what value: 2.2k? 4.7k?
+;   a stable state, pull-up resistors (say, 4.7k) should be used on the
+;   CLK, /LATCH, and especially /STROBE pins that interface with the TPH.
 ;
 ;   The MCU should be powered directly from the 3.3V supply used by the rest of
 ;   the P-Touch controller PCB, to ensure there are no unexpected voltage
@@ -77,44 +81,36 @@
 ;   | 2       | PB3    | 8       | /STROBE  | Heater on (active low); 5.7ms max!   |
 ;   | 8??     | VCC    | 9       | VCC?     | +3.3V, supplied by PT-1010           |
 ;   | -       | -      | 10      | Vheater  | +9V, supplied by PT-1010             |
+;   | 6       | PB1    | -       | -        | SENSE -> INT0 external interrupt     |
 ;   | 1       | /RESET | -       | -        | MCU External RESET                   |
-;   | 6       | PB1    | -       | -        | Reserved for INT0 external interrupt |
 ;
-;   NOTE: One of the TPH's VCC pins (5 and 9) might not be a supply, but rather
-;   an input hard-wired to VCC, OR a line actually controlled by an output from
-;   the P-Touch's internal MCU. If the latter is true, it might fail if we try
-;   to use it as the VCC supply for the ATtiny! We could probably verify this
-;   by measuring the resistance between TPH pins 5 and 9 ON THE MAIN P-TOUCH PCB
-;   when the TPH and batteries are both disconnected. If the resistance is less
-;   than 2 ohms, it's probably safe to assume it's hard-wired and both pins
-;   are truly VCC.
-;
+;   NOTE: One of the TPH's VCC pins (5 and 9) might not be DEFINED as a supply,
+;   but it has been shown to be hard-wired directly to VCC anyway inside the PT-1010.
+;   In other devices that use this Kyocera TPH, one of the two pins may not be able
+;   to source enough current to power the MCU, so be careful.
+
 ;   Pin 1 of the MCU (/RESET or PB5) is configured to work as an external RESET,
 ;   but this can be tied high (?) and the MCU will reset itself internally at power-on.
 ;   Later it could be another control or input line, but once we do that the MCU can't
 ;   be re-programmed without a "high voltage programmer".
 ;
-;   Pin 6 (PB1) is reserved for the moment. Later it is the ideal candidate for
-;   triggering INT0 (External Interrupt Request 0), which we could use to sense when
-;   the P-Touch's motor engages, and hence know the right time to start controlling
-;   the TPH. It could otherwise be used to sense a manual button-press.
-;
 ; Quick visual test:
 ;
 ;   If you have an LED and 330-ohm resistor in series between the /STROBE (PB4, pin 3)
 ;   line and VCC, then the LED should be off when the MCU is initially powered on.
-;   When you press the button, the line print routine should kick in, and the LED
-;   should be lit (at mid brightness) for about 1 second: 64 x 14.4ms ~= 0.9 seconds.
-;   If it's lit for nearly 2 seconds (or longer) it means the INT0 interrupt
-;   flagged twice, back to back. This ideally shouldn't happen since:
+;   If you assert PB1 by shorting MCU pin 6 momentarily to GND, the line print routine
+;   should kick in, and the LED should be lit (at mid brightness) for about 1 second
+;   per 64 lines (since 64 x 14.4ms ~= 0.9 seconds). If it's lit for at least double the
+;   expected timeframe it means the INT0 interrupt flagged twice, back to back.
+;   This ideally shouldn't happen since:
 ;
-;   1.  The very start of the button ISR should disable INT0,
-;       so that it no longer gets flagged until we're ready;
-;   2.  The end of the line printing test should clear the button interrupt sense flag,
-;       so that pressing the button a 2nd time during the print run will have no effect
+;   1.  The very start of the INT0 ISR should disable INT0, so that it no longer gets
+;       flagged until we're ready;
+;   2.  The end of the line printing test should clear the INT0 sense flag, so that
+;       asserting it a 2nd time during the print run will have no effect
 ;       anyway even if point 1 fails;
-;   3.  Even if the button is held down, INT0 is only ever set to trigger on a falling
-;       edge, rather than when the pin is simply at a low level.
+;   3.  Even if it stays asserted the whole time, INT0 is only ever set to trigger on
+;       a falling edge, rather than when the pin is simply at a low level.
 ;
 
 .include "t13.asm"
@@ -148,15 +144,11 @@
 .equ GH,            YH
 
 ; General parameters:
-.equ OSCCAL_TARGET, 0x69    ; OSCCAL value of 0x6A seems to be closest to 9.6MHz on my ATtiny13A at 3.3V.
-;.equ ACTIVE_TIMEOUT,55      ; The "Line ACTIVE window" lasts for 55 timer ticks (55*1024 CPU cycles) => 5.87ms
-;.equ IDLE_TIMEOUT,  80      ; The "Line IDLE window" lasts 80 ticks => 8.53ms
-.equ ACTIVE_TIMEOUT,55      ; The "Line ACTIVE window" lasts for 55 timer ticks (55*1024 CPU cycles) => ~5.87ms
-                            ; NOTE: /STROBE is not asserted for the first 0.22ms of this time;
-                            ; Hence /STROBE is asserted for about 5.65ms.
-.equ IDLE_TIMEOUT,  78      ; The "Line IDLE window" lasts 78 ticks => 8.32ms
-
-; Total line time: ~14.19ms, though due to minor clock drift I've measured it to be about 14.38ms.
+.equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 9.6MHz on my ATtiny13A at 3.3V.
+.equ ACTIVE_TIMEOUT,54      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
+                            ; NOTE: /STROBE is not asserted for roughly first 0.15ms of this time;
+                            ; /STROBE is asserted for ROUGHLY (54*1024-1500)/9600000 seconds => 5.6ms.
+.equ IDLE_TIMEOUT,  79      ; The "Line IDLE window".
 
 
 ; ------------------------------- Interrupt table -------------------------------;
@@ -175,9 +167,9 @@ firmware_top:
     reti                        ; Interrupt Vector 5   = EE_RDY     (EEPROM Ready)
     reti                        ; Interrupt Vector 6   = ANA_COMP   (Analog Comparator)
     ijmp  ; Jump to Z address   ; Interrupt Vector 7   = TIM0_COMPA (Timer Compare Match A)
-    reti                        ; Interrupt Vector 8   = TIM0_COMPB (Timer Compare Match B)
-    reti                        ; Interrupt Vector 9   = WDT        (Watchdog Timeout)
-    reti                        ; Interrupt Vector 10  = ADC        (ADC Conversion Complete)
+    ;reti                        ; Interrupt Vector 8   = TIM0_COMPB (Timer Compare Match B)
+    ;reti                        ; Interrupt Vector 9   = WDT        (Watchdog Timeout)
+    ;reti                        ; Interrupt Vector 10  = ADC        (ADC Conversion Complete)
 
 
 ; ------------------------------- Main Initialisation -------------------------------;
@@ -235,27 +227,18 @@ int0_isr:
 
     ; Set up our 'G' pointer to point to the start of our pixel data block, as
     ; stored in Program Memory, beginning at the 'pixel_data' label.
-    ; ldi GH, hi8(pixel_data)
-    ; ldi GL, lo8(pixel_data)
     ldiw_data GR, pixel_data
 
     ; Set up the number of lines that are defined in pixel_data
     ; (i.e. no. of bytes in the data table, divided by 8):
-    ; ldi LCH, (end_pixel_data-pixel_data)>>11
-    ; ldi LCL, ((end_pixel_data-pixel_data)>>3) & 0xFF
     ldiw LCR, (end_pixel_data-pixel_data)>>3
 
     ; Set up the Z (16-bit) pointer to be an address pointer to the
     ; "Line ACTIVE Window" ISR. Basically, the first time-out will call the ISR
     ; which loads line data and fires the heater of the TPH.
-    ; ldi ZH, pm_hi8(line_active_isr)
-    ; ldi ZL, pm_lo8(line_active_isr)
     ldiw_code ZR, line_active_isr
 
-    ; Configure timer to generate an interrupt after 80 counts (or 8.53ms).
-    ; That is, after 80/(CLK/1024) seconds =>
-    ;   80*1024/9600000 = 0.0085333... ~= 8.53ms
-    ;
+    ; Configure timer to generate an interrupt after IDLE_TIMEOUT counts (~8.5ms).
     init_simple_timer clk_1024, IDLE_TIMEOUT
     ; NOTE: The timer should now be started.
     ; NOTE: Interrupts are globally enabled, automatically, after RETI:
@@ -265,12 +248,12 @@ int0_isr:
 
 ; ------------------------------- Line ACTIVE Window ISR -------------------------------;
 
-; This ISR (Interrupt Service Routine) handles TIM0_COMPA after the 8.53ms delay of the
+; This ISR (Interrupt Service Routine) handles TIM0_COMPA after the ~8.5ms delay of the
 ; "Line IDLE Window ISR". It writes data for the next line to print, with the following
 ; routine:
 ;
-;   1.  Change timeout to 55 counts (i.e. 5.87ms), setting the total duration of our
-;       Line ACTIVE Window (i.e. 5.87ms before jumping to the "Line IDLE Window" ISR).
+;   1.  Change timeout to ~5.6ms, setting the total duration of our
+;       Line ACTIVE Window (i.e. 5.6ms before jumping to the "Line IDLE Window" ISR).
 ;   2.  Raises TPH_CLK, with an initial lead-in delay.
 ;   3.  Identifies where (in Program Memory) to read pixel data bytes from.
 ;   4.  In a loop, loads 8 bytes and clocks out 8 bits for each of those 8 bytes,
@@ -282,39 +265,16 @@ int0_isr:
 ;       b.  Sets up Z to point the next TIM0_COMPA interrupt to the "Line IDLE Window" ISR.
 ;       c.  Exits the ISR with "RETI".
 ;
-;   Since the timer is running the whole time, it will time out exactly 55 counts since
+;   Since the timer is running the whole time, it will time out exactly since
 ;   the VERY START of this ISR. /STROBE will hence remain asserted -- being reset only
 ;   by the "Line IDLE Window" ISR -- after approx. 5.87ms MINUS the time it takes to
-;   execute all of steps 1--7 (which has been shown to be about 220uS). Hence, /STROBE
-;   will be asserted for about a total of 5.65ms.
+;   execute all of steps 1--7 (which has been shown to be about 170uS). Hence, /STROBE
+;   will be asserted for about a total of 5.6ms.
 ;
-
-; Timing formulae:
-;   
-;   | Var | Meaning                                     | Formula               | K[^1] | ~Time (us) |
-;   | K   | 1 MCU cycle at 9.6MHz                       |                       |    1  |    0.1042  |
-;   | A   | SPI front porch (initial CLK high)          |                       |   86  |    8.958   |
-;   | c   | SPI CLK pulse width (half-cycle)            |                       |   10  |    1.042   |
-;   | G   | [^2]                                        |                       |   84  |    8.750   |
-;   | g   | Gap between each regular SPI byte sequence  | g = G-2c              |   65  |    6.771   |
-;   | a   | Pre-delay before starting SPI byte sequence | a = A-g               |   21  |    2.188   |
-;   | b   | SPI bit push                                | b = 2c                |   20  |    2.083   |
-;   | B   | 1 full (8-bit) SPI byte sequence            | B = g+c+8b = g+17c    |  235  |   24.480   |
-;
-;
-;   [^1]:   1 "K" is one cycle of the MCU clock at 9.6MHz, which is the amount of time it
-;           takes (exactly) to execute a typical, single ATtiny13A instruction. Hence,
-;           all timing is derrived from this.
-;
-;   [^2]:   Time measured between last CLK rising edge of prior byte, and first CLK falling
-;           edge of next byte... i.e. total duration that CLK is high between bytes.
-;   
 
 line_active_isr:
     ; Raise CLK for (a):
     sbi PORTB, TPH_CLK      ; 2K
-
-; 0K
 
     ; OK, so CLK has JUST gone high at this point...
     ; If we now count the cycles between here and the moment it next goes
@@ -325,32 +285,15 @@ line_active_isr:
     movw ZR, GR             ; 1K
     ; Set byte count to 8:
     ldi BYTE_COUNT, 8       ; 1K
-    ; Wait out remainder of (a), i.e. a-2K = 19K
-    micro_delay 7           ; 21K
-    nop                     ; 1K
 
 next_byte:
 
-; 24K, 259K, 494K, 729K, 964K, 1199K, 1434K, 1669K
-
-    ; (8B) Byte load/write loop: 8B = 8(g+8b+c) = 8(g+17c) = 1880K = 195.833us
-    ; Wait out MOST of (g), except for a little bit of data prep to pad it out afterwards:
-    micro_delay 17          ; 51K
     ; Set bit count to 8:
     ldi BIT_COUNT, 8        ; 1K
     ; Load a byte that we need to push out, incrementing Z at the same time:
     lpm DATA_BUFFER, Z+     ; 3K
 
 next_bit:
-
-;  79K,  99K, 119K, 139K, 159K, 179K, 199K, 219K
-; 314K                                  ... 454K
-; 549K                                  ... 689K
-;                                       ... 924K
-;                                       ... 1159K
-;                                       ... 1394K
-;                                       ... 1629K
-;                                       ... 1864K
 
     ; Prep the data we'll write directly to PORTB, in a register.
     ; We do this so we'll be able to change the state of CLK and DATA simultaneously.
@@ -362,84 +305,43 @@ next_bit:
     ; Need to make sure DATA pin will go high:
     ori OUT_BUFFER, M_TPH_DATA     ; 1K
 spi_begin_bit:
-    adiw ZR, 0              ; 2K - pad ONLY
+    wait_2                  ; 2K
     ; Write register-buffered pin states to PORTB, hence setting CLK and DATA states simultaneously:
     out PORTB, OUT_BUFFER   ; 1K
 
-;  86K, 106K, 126K, 146K, 166K, 186K, 206K, 226K
-; 321K                                  ... 461K
-; 556K                                  ... 696K
-;                                       ... 931K
-;                                       ... 1166K
-;                                       ... 1401K
-;                                       ... 1636K
-;                                       ... 1871K
-
     ; Now wait 10K and make CLK go high:
-    lpm                     ; 3K - pad ONLY
-    lpm                     ; 3K - pad ONLY
-    adiw ZR, 0              ; 2K - pad ONLY
+    wait_8                  ; NOTE: Could do calculations here instead.
     sbi PORTB, TPH_CLK      ; 2K
-
-;  96K, 116K, 136K, 156K, 176K, 196K, 216K, 236K
-; 331K, 351K, 371K, 391K, 411K, 431K, 451K, 471K
-; 566K                                  ... 706K
-;                                       ... 941K
-;                                       ... 1176K
-;                                       ... 1411K
-;                                       ... 1646K
-;                                       ... 1881K
 
     ; Now check if we have any more bits left...
     dec BIT_COUNT           ; 1K
-    brne next_bit           ; 2K
-    ; By this point, we're 2 cycles into 10 of the *FINAL* CLK high state,
-    ; which is then followed by another (c), for a total of 2K spent out of 20K...
-    micro_delay 5           ; 15K
-    nop                     ; 1K
-    ; /LATCH, /STROBE, and CLK are already high as required.
-    ; Ensure DATA is high, too, in preparation for clocking out a byte.
-    ; This is done here to fix loop timing, while also ensuring that
-    ; the DATA line is in the correct state after the last iteration.
-    sbi PORTB, TPH_DATA     ; 2K
+    brne next_bit           ; 2K    Branch if more bits are left.
 
-; 256K, 491K, 726K, 961K, 1196K, 1431K, 1666K, 1901K
-
+    ; Byte is finished. More bytes to go?
     dec BYTE_COUNT          ; 1K
-    brne next_byte          ; 2K
+    brne next_byte          ; 2K    Branch if more bytes are left.
 
-; 1903K
-
-    ; Now wait out the remainder of g+t and then pull CLK low again.
-    micro_delay 28          ; 84K
-    nop                     ; 1K
+    ; Pull CLK low again.
+    wait_4                  ; 4K
     cbi PORTB, TPH_CLK      ; 2K
 
-; 1990K
-
-    ; Wait out R (78K), and then pulse /LATCH for 18K
-    micro_delay 25          ; 75K
-    nop                     ; 1K
+    ; Wait out R (80K), and then pulse /LATCH for 20K
+    micro_delay 26          ; 78K
     cbi PORTB, TPH_LATCH    ; 2K
-    micro_delay 5           ; 15K
-    nop                     ; 1K
+    micro_delay 6           ; 18K
     sbi PORTB, TPH_LATCH    ; 2K
-
-; 2086K
 
     ; Wait out W (23K) and then lower /STROBE
     micro_delay 7           ; 21K
     cbi PORTB, TPH_STROBE   ; 2K
 
-; 2109K
-
     ; At this point, /STROBE is now lowered, so prepare the next stage...
 
     ; Save current pointer to the first byte of the next line (Z), in GR:
     movw GR, ZR
-    ; Change ORC0A to 55, so that the next time the interrupt fires, it will
-    ; be after our CURRENT window of 55*1024/9600000 seconds (5.87ms) has
-    ; elapsed, and we're ready to bring /STROBE high again.
+    ; Change ORC0A to ACTIVE_TIMEOUT, so that the next time the interrupt fires,
+    ; it will be after our CURRENT window has elapsed, and we're ready to
+    ; bring /STROBE high again.
     ldi r16, ACTIVE_TIMEOUT
     out OCR0A, r16
     ; Point Z to the "Line IDLE Window" ISR.
@@ -474,12 +376,10 @@ line_idle_isr:
     disable_timer
     ; Clear INTF0 (flag of whether or not the interrupt has been asserted):
     ; Writing a ONE to bit 6 (INTF0) of GIFR CLEARS it... I think this is
-    ; because it can't actually be set in software, and this ensures that
+    ; because it can't actually be asserted in software, and this ensures that
     ; by writing a ZERO we don't have to touch any of the other bits:
-    in r16, GIFR
-    sbr r16, (1<<6)
+    ldi r16, M_INTF0
     out GIFR, r16
-    nop
     ; Re-enable INT0 interrupt (using previous settings):
     enable_int0
     reti
@@ -495,7 +395,7 @@ more_lines_left:
 pixel_data:
 
     ; Import the hackaday.com logo (after conversion with ptconvert.rb):
-    .incbin "had-skull2.raw"
+    .incbin "ro.raw"
 
 end_pixel_data:
 

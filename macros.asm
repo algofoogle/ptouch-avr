@@ -15,6 +15,25 @@
     out SPL, r16
 .endm
 
+.macro wait_2
+    adiw ZR, 0 ; 2K - pad ONLY
+.endm
+
+.macro wait_3
+    lpm ; 3K (pad ONLY).
+.endm
+
+.macro wait_4
+    wait_2  ; 2K
+    wait_2  ; 2K
+.endm
+
+.macro wait_8
+    wait_3  ; 3K
+    wait_3  ; 3K
+    wait_2  ; 2K
+.endm
+
 ; This macro executes a delay measured in SIXTEENTHS OF A MILLISECOND
 ; (assuming that the system clock is 9.6MHz). It is called like this:
 ;   short_delay 160, r16, r17
@@ -46,21 +65,21 @@
 ; This is the same as short_delay, except it allows you to finely tune
 ; exactly how many cycles it will waste, by supplying values for
 ; both the inner and outer loops, such that the exact delay is:
-; 	delay = (3*ticks_b*(ticks_a + 1) / 9600) milliseconds
+;   delay = (3*ticks_b*(ticks_a + 1) / 9600) milliseconds
 ; Examples:
-;	; (3*16*200)/9600 => 1 millisecond:
-; 		precise_delay 199, 16
-;		; 6 instructions.
-;	; Two cycles short of exactly 10 milliseconds:
-;		precise_delay 134, 237	; 3*237*135 => 95985 cycles.
-;		precise_delay   1, 2	; 3*2*2 => 12 cycles.
-;		nop						; 1 cycle.
-;		; SUM: 95,998 cycles => 2 less than 96,000.
-;		; 13 instructions.
+;   ; (3*16*200)/9600 => 1 millisecond:
+;       precise_delay 199, 16
+;       ; 6 instructions.
+;   ; Two cycles short of exactly 10 milliseconds:
+;       precise_delay 134, 237  ; 3*237*135 => 95985 cycles.
+;       precise_delay   1, 2    ; 3*2*2 => 12 cycles.
+;       nop                     ; 1 cycle.
+;       ; SUM: 95,998 cycles => 2 less than 96,000.
+;       ; 13 instructions.
 ; NOTE: If ticks_a or ticks_b is 0, it's equivalent to 256.
 ; Examples:
-;	precise_delay 1, 1		; Shortest possible delay: 3*1*2/9600 => 0.625us
-;	precise_delay 0, 0		; Longest possible delay: 3*256*257/9600 => 20.56ms
+;   precise_delay 1, 1      ; Shortest possible delay: 3*1*2/9600 => 0.625us
+;   precise_delay 0, 0      ; Longest possible delay: 3*256*257/9600 => 20.56ms
 .macro precise_delay ticks_a:req, ticks_b:req, reg_a=r16, reg_b=r17
     ; Outer "high" loop (multilpier):
     ldi \reg_b, \ticks_b    ; 1 cycle.
@@ -89,32 +108,32 @@
 ; The code below "slides" OSCCAL to the target value, as the datasheet
 ; section 6.4.1 recommends.
 .macro slide_osccal target:req
-	in r16, OSCCAL
-1:	; Loop start: Check calibration value.
-	cpi r16, \target
-	breq 3f				; Calibration matches target: Done!
-	brlo 2f				; Calibration too low: Raise it.
+    in r16, OSCCAL
+1:  ; Loop start: Check calibration value.
+    cpi r16, \target
+    breq 3f             ; Calibration matches target: Done!
+    brlo 2f             ; Calibration too low: Raise it.
     ; To shave instructions, the logic here is basically:
     ;    OSCCAL += (too_high ? -2 : 0) + 1
     ; => OSCCAL += (too_high ? -1 : 1)
-	subi r16, 2			; Calibration too high: Lower it.
-2:	; Jump here if calibration too low.
-	inc r16
-	out OSCCAL, r16		; Write new calibration value.
-	rjmp 1b				; Go chcek it again.
-3:	; Done!
+    subi r16, 2         ; Calibration too high: Lower it.
+2:  ; Jump here if calibration too low.
+    inc r16
+    out OSCCAL, r16     ; Write new calibration value.
+    rjmp 1b             ; Go chcek it again.
+3:  ; Done!
 .endm
 
 
 ; Ensure the Clock Pre-scaler is disabled (i.e. CLKPS is set to 0b0000)...
 .macro disable_clock_prescaler
-    ; First, enable writing to the CLKPS bits (CLKPR3..0):
-    ldi r16, 0b10000000
+    ; First, enable writing to the CLKPS bits (CLKPR[3:0]) by setting the CLKPCE bit:
+    ldi r16, M_CLKPCE
     out CLKPR, r16
     ; Now, within 4 cycles, we must write our intended CLKPS value, which in
-    ; this case is still 0b0000. When performing this write, we must also write
-    ; 0 to CLKPCE:
-    ldi r16, 0b00000000     ; Cycle 1
+    ; this case is still 0b0000 (CLKPS_DIV1). When performing this write,
+    ; we must also write 0 to CLKPCE:
+    ldi r16, CLKPS_DIV1     ; Cycle 1
     out CLKPR, r16          ; Cycle 2
     ; The CPU clock should be running at full speed now (9.6MHz).
 .endm
@@ -125,6 +144,7 @@
 ; like this:
 ;   init_simple_timer csmode, [t], [r]
 ;   ...where csmode is one of:
+;       0           = No clock source (Timer/Counter stopped).
 ;       clk_1       = CS0 mode 1 (no prescaler -- full speed timer clock).
 ;       clk_8       = CS0 mode 2 (CLK/8 prescaler).
 ;       clk_64      = CS0 mode 3 (CLK/64 prescaler).
@@ -145,13 +165,13 @@
 .equ clk_xrise, 7
 .macro init_simple_timer csmode:req, t, r, enabled=1
     ; Set TC sync mode; i.e. lock the timer's reset line.
-    ldi r16, 0b10000001
+    ldi r16, M_TSM | M_PSR10
     out GTCCR, r16
     ; Disable automatic output of the timer on the MCU's external pins,
     ; and select CTC (WGM mode 2) to auto-clear timer when it hits \t (threshold).
-    ldi r16, 0b00000010
+    ldi r16, COM0_NONE | (WGM_CTC & 3)
     out TCCR0A, r16
-    ldi r16, \csmode    ; Set Clock Source mode in bits 2..0.
+    ldi r16, \csmode | ((WGM_CTC & 4) << 1)  ; Set Clock Source mode in bits 2..0; see "clk_..." above.
     out TCCR0B, r16
     ; Set OCR0A (counter limit, and trigger point for counter interrupt):
     .ifb \t
@@ -168,7 +188,7 @@
         .endif
     .endif
     ; Enable the interrupt on OCF0A being set, but disable the rest:
-    ldi r16, 0b00000100
+    ldi r16, M_OCIE0A
     out TIMSK0, r16
     ; Reset timer value:
     clr r16
@@ -187,7 +207,7 @@
 
 .macro disable_timer
     ; Set TC sync mode; i.e. lock the timer's reset line.
-    ldi r16, 0b10000001
+    ldi r16, M_TSM | M_PSR10
     out GTCCR, r16
 .endm
 
@@ -197,10 +217,10 @@
 .equ sleep_adc,         0b01    ; ADC Noise Reduction mode.
 .equ sleep_powerdown,   0b10
 .macro enable_sleep mode=sleep_idle
-    in r16, MCUCR           ; Read current MCU Control Register state.
-    andi r16, 0b11100111    ; Mask out SM[1:0] bits.
-    ori r16, 0b00100000 | (\mode<<3) ; Turn on SE (Sleep Enable) bit, as well as SM[1:0] mode bits.
-    out MCUCR, r16          ; Update MCUCR.
+    in r16, MCUCR               ; Read current MCU Control Register state.
+    andi r16, ~M_SM             ; Mask out SM[1:0] bits.
+    ori r16, M_SE | (\mode<<3)  ; Turn on SE (Sleep Enable) bit, as well as SM[1:0] mode bits.
+    out MCUCR, r16              ; Update MCUCR.
 .endm
 
 ; Configure "Interrupt 0 Sense Control" (ISC[1:0]) mode for INT0.
@@ -212,21 +232,30 @@
 .equ int0_rising,   0b11
 .macro enable_int0 mode=-1
     .if \mode != -1
-        ; Configure INT0 sense:
+        ; We want to set the INT0 mode, first:
         in r16, MCUCR           ; Read current MCU Control Register state.
-        andi r16, 0b11111100    ; Mask out ISC0[1:0] bits.
-        ori r16, \mode          ; Configure ISC0[1:0] bits.
+        .if \mode == int0_low
+            ; Configure INT0 sense on low level:
+            andi r16, ~M_ISC
+            out MCUCR, r16
+        .elif \mode == int0_rising
+            ; Configure INT0 sense on a rising edge:
+            ori r16, int0_rising
+        .else
+            andi r16, ~M_ISC
+            ori r16, \mode
+        .endif
         out MCUCR, r16          ; Update MCUCR.
     .endif
     ; Enable INT0:
-    in r16, GIMSK   ; Read existing GIMSK value.
-    sbr r16, (1<<6)      ; Turn on bit 6 (INT0 control bit).
-    out GIMSK, r16  ; Write value back to GIMSK.
+    in r16, GIMSK               ; Read existing GIMSK value.
+    sbr r16, M_INT0_EN          ; Turn on bit 6 (INT0 control bit).
+    out GIMSK, r16              ; Write value back to GIMSK.
 .endm
 
 .macro disable_int0
-    in r16, GIMSK   ; Read existing GIMSK value.
-    cbr r16, (1<<6)      ; Turn OFF bit 6 (INT0 control disabled).
+    in r16, GIMSK               ; Read existing GIMSK value.
+    cbr r16, M_INT0_EN          ; Turn OFF bit 6 (INT0 control disabled).
     out GIMSK, r16
 .endm
 
