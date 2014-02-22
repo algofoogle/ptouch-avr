@@ -395,7 +395,7 @@ more_lines_left:
 pixel_data:
 
     ; Import the hackaday.com logo (after conversion with ptconvert.rb):
-    .incbin "ro.raw"
+    .incbin "had-skull2.raw"
 
 end_pixel_data:
 
