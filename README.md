@@ -8,9 +8,9 @@ TPH (Thermal Print Head) of a Brother P-Touch label printer, to theoretically pr
 any graphics.
 
 I am writing this code to target an Atmel ATtiny13A, to control the TPH of a
-Brother P-Touch PT-1010 hand-held label printer. The same code should port very
-easily to a larger ATtiny85A, and is expected to also drive the print head of
-a PT-1000.
+Brother P-Touch PT-1010 hand-held label printer. I am also adding conditional
+compilation to the code so that it can target the ATtiny25/45/85. This code is
+expected to also drive the print head of a PT-1000.
 
 In time this repo will accompany an article that I will later post on my blog:
 <http://anton.maurovic.com/>
@@ -24,7 +24,8 @@ This work is based, in part, on an
 
 NOTE that this code is currently just a proof-of-concept and may not work properly,
 and at this time is **NOT CONSIDERED FIT FOR PUBLIC RELEASE OR USE**. Use it at
-your own risk.
+your own risk; timing errors or other bad wiring may lead to damaging either your
+Brother P-Touch printer control circuitry or (more likely) its TPH.
 
 
 

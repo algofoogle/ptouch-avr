@@ -10,29 +10,28 @@
 ;   intended to accompany an article I'm writing on "Brother PT-1010 Hacking"
 ;   at my blog, http://anton.maurovic.com.
 ;
-;   The behaviour spec for how this is to be used is:
+;   It is intended that an MCU programmed with this firmware will be used as follows:
 ;
-;   1.  The printer is powered on.
-;   2.  The MCU powers on, initialises, and goes idle.
-;   3.  Start the printer on a run of (say) 30 random characters JUST to get
-;       the tape rolling.
-;   4.  The printer will be asserting the "/STROBE" control line of the TPH.
-;       This is actually used instead by the MCU as a line to sense when it
-;       should start driving the TPH.
-;   5.  MCU renders an image independently of whatever the printer is doing.
-;   6.  MCU then waits for another assertion of "/STROBE", which effectively
-;       indicates that another print run has started (or the prior one hasn't
-;       finished yet), and it should hence repeat its own print cycle.
+;   1.  When the printer is powered on, the MCU powers on, initialises, and goes idle.
+;   2.  When a print run is started, and the tape starts rolling, the MCU will detect
+;       this and start sending data for printing its own image; the
+;       MCU renders an image independently of whatever the printer is doing.
+;   3.  When the MCU finishes sending the data for its complete image, it goes back
+;       to checking to see if the printer is still running. If so, it will repeat
+;       the rendering of its own image.
 ;
 ;   The detailed technical spec for this firmware is as follows:
 ;
 ;   1.  The MCU is powered by the regulated 3.3V supply (VCC) provided by the printer.
 ;   2.  When the printer is powered on (and hence the MCU), the MCU should go thru an
 ;       init routine that:
-;       a.  Sets PB0, PB2, PB3, and PB4 to be outputs, and asserts the correct signals
+;       a.  Configures one pin as an input, which I've called "SENSE". The actual pin
+;           used is whichever is designated to have the "INT0" External Interrupt
+;           function (PB1 for ATtiny13, or PB2 for ATtiny25/45/85).
+;       b.  Configures all other pins as outputs, and asserts the correct signals
 ;           for each (corresponding to control lines of the TPH) such that CLK is low,
 ;           and DATA, /LATCH, and /STROBE are all high.
-;       b.  Calibrates the MCU's internal oscillator to approx. 9.6MHz (which will use
+;       c.  Calibrates the MCU's internal oscillator.  to approx. 9.6MHz (which will use
 ;           a pre-determined and tested calibration value for 3.3V operation).
 ;       c.  Configures a timer and interrupt that can be used to time stages of the
 ;           14.4ms line rendering cycle. Timer is initially *stopped*, though.
@@ -44,6 +43,10 @@
 ;       sending it to the TPH at the correct rate, hence rendering a pattern line-by-line.
 ;   5.  At the end of the pattern, the timer is disabled, and PB1's interrupt is re-enabled.
 ;
+;   NOTE that conditional compilation is used in this code to determine that correct
+;   code, timing, and other parameters will be used for the AVR device being targeted.
+;   See "Usage info" for an explanation of how this is to be used.
+;
 ; Burning info::
 ;
 ; ***    LOW fuse byte:  0x6A
@@ -52,37 +55,60 @@
 ;
 ; Usage info::
 ;
+;   ASSEMBLING
+;   ==========
+;
 ;   This is AVR Assembly code, written using the GNU "as" assembler syntax, and
-;   specifically "avr-as" as is installed with avr-gcc. It targets the ATtiny13A
-;   initially, but with some modifications should work with the ATtiny25/45/85
-;   variants.
+;   specifically "avr-as" as is installed with avr-gcc. It has been designed to
+;   target AVR MCUs in the "ATtiny" range according to which ONE of the following
+;   symbols is defined as non-zero:
+;
+;       *   target_t13  => ATtiny13 or ATtiny13A
+;       *   target_t85  => ATtiny85
+;
+;   Assembling for, say, the ATtiny85 can be driven by the command-line as follows:
+;
+;       avr-as ptouchavr.asm -mmcu=attiny13a -o ptouchavr.o --defsym target_t13=1
+;
+;   NOTE that this specifies the target via the trailing option:  --defsym target_t13=1
+;   but you can alternatively force this in the code (if you really want to) by
+;   uncommenting one of these lines:
+;
+;       .equ target_t13, 1  ; Target ATtiny13(A)
+;       .equ target_t85, 1  ; Target ATtiny85
+;
+;   BUILDING THE CIRCUIT
+;   ====================
 ;
 ;   It is wise to ensure there is a 100nF bypass capacitor strapped between
 ;   VCC and GND of the MCU.
 ;
 ;   To avoid accidentally asserting any lines of the TPH before the MCU reaches
 ;   a stable state, pull-up resistors (say, 4.7k) should be used on the
-;   CLK, /LATCH, and especially /STROBE pins that interface with the TPH.
+;   DATA, /LATCH, and especially /STROBE pins that interface with the TPH.
 ;
 ;   The MCU should be powered directly from the 3.3V supply used by the rest of
 ;   the P-Touch controller PCB, to ensure there are no unexpected voltage
 ;   differences from another PSU or separate regulator.
 ;
-;   The pins of the ATtiny13A have been used as follows:
+;   The pins of the MCU have been used as follows, depending on whether you're
+;   using an ATtiny13 or ATtiny25/45/85:
 ;
-;   | MCU Pin | Port   | TPH Pin | TPH Name | Purpose                              |
-;   | -       | -      | 1       | Vheater  | +9V, supplied by PT-1010             |
-;   | 5       | PB0    | 2       | DATA     | SPI data (Input, at TPH)             |
-;   | 7       | PB2    | 3       | CLK      | SPI clock (Input, at TPH)            |
-;   | 3       | PB4    | 4       | /LATCH   | Data buffer latch (active low)       |
-;   | 8??     | VCC    | 5       | VCC?     | +3.3V, supplied by PT-1010           |
-;   | 4       | GND    | 6       | GND      | Common ground                        |
-;   | 4       | GND    | 7       | GND      | Physically connected to TPH pin 6    |
-;   | 2       | PB3    | 8       | /STROBE  | Heater on (active low); 5.7ms max!   |
-;   | 8??     | VCC    | 9       | VCC?     | +3.3V, supplied by PT-1010           |
-;   | -       | -      | 10      | Vheater  | +9V, supplied by PT-1010             |
-;   | 6       | PB1    | -       | -        | SENSE -> INT0 external interrupt     |
-;   | 1       | /RESET | -       | -        | MCU External RESET                   |
+;   | ATtiny13(A)  | ATtiny85     | TPH           |                                      |
+;   | Pin | Port   | Pin | Port   | Pin | Name    | Purpose                              |
+;   |-----|--------|-----|--------|-----|---------|--------------------------------------|
+;   | -   | -      | -   | -      | 1   | Vheater | +9V, supplied by PT-1010             |
+;   | 5   | PB0    | 5   | PB0    | 2   | DATA    | SPI data (Input, at TPH)             |
+;   | 7   | PB2    | 6   | PB1    | 3   | CLK     | SPI clock (Input, at TPH)            |
+;   | 3   | PB4    | 3   | PB4    | 4   | /LATCH  | Data buffer latch (active low)       |
+;   | 8   | VCC    | 8   | VCC    | 5   | VCC??   | +3.3V, supplied by PT-1010           |
+;   | 4   | GND    | 4   | GND    | 6   | GND     | Common ground                        |
+;   | 4   | GND    | 4   | GND    | 7   | GND     | Physically connected to TPH pin 6    |
+;   | 2   | PB3    | 2   | PB3    | 8   | /STROBE | Heater on (active low); 5.7ms max!   |
+;   | 8   | VCC    | 8   | VCC    | 9   | VCC??   | +3.3V, supplied by PT-1010           |
+;   | -   | -      | -   | -      | 10  | Vheater | +9V, supplied by PT-1010             |
+;   | 6   | PB1    | 7   | PB2    | -   | -       | SENSE -> INT0 external interrupt     |
+;   | 1   | /RESET | 1   | /RESET | -   | -       | MCU External RESET                   |
 ;
 ;   NOTE: One of the TPH's VCC pins (5 and 9) might not be DEFINED as a supply,
 ;   but it has been shown to be hard-wired directly to VCC anyway inside the PT-1010.
@@ -90,17 +116,19 @@
 ;   to source enough current to power the MCU, so be careful.
 
 ;   Pin 1 of the MCU (/RESET or PB5) is configured to work as an external RESET,
-;   but this can be tied high (?) and the MCU will reset itself internally at power-on.
+;   but this can be tied high and the MCU will reset itself internally at power-on.
 ;   Later it could be another control or input line, but once we do that the MCU can't
 ;   be re-programmed without a "high voltage programmer".
 ;
-; Quick visual test:
+;   QUICK VISUAL TEST
+;   =================
 ;
-;   If you have an LED and 330-ohm resistor in series between the /STROBE (PB4, pin 3)
+;   If you have an LED and 470-ohm resistor in series between the /STROBE (PB4, pin 3)
 ;   line and VCC, then the LED should be off when the MCU is initially powered on.
-;   If you assert PB1 by shorting MCU pin 6 momentarily to GND, the line print routine
-;   should kick in, and the LED should be lit (at mid brightness) for about 1 second
-;   per 64 lines (since 64 x 14.4ms ~= 0.9 seconds). If it's lit for at least double the
+;   If you assert "SENSE" (PB1 for ATtiny13A, or PB2 for ATtiny85) by shorting the
+;   respective MCU pin momentarily to GND, the line print routine should kick in, and the
+;   LED should be lit (at mid brightness) for about 1 second per 64 lines
+;   (since 64 x 14.4ms ~= 0.9 seconds). If it's lit for at least double the
 ;   expected timeframe it means the INT0 interrupt flagged twice, back to back.
 ;   This ideally shouldn't happen since:
 ;
@@ -113,33 +141,41 @@
 ;       a falling edge, rather than when the pin is simply at a low level.
 ;
 
-.if target_t13
-    .print "*** Targeting ATtiny13(a)"
-.elseif target_t85
+; Check which MCU we're targeting and turn it into a number in "ATTINY":
+.ifdef target_t13
+    .print "*** Targeting ATtiny13(A)"
+    .print "* Desired calibrated Internal RC Clock: 9.6MHz"
+    .equ ATTINY, 13
+.endif
+.ifdef target_t85
     .print "*** Targeting ATtiny85"
+    .print "* Desired calibrated Internal RC Clock: 8.0MHz"
+    .equ ATTINY, 85
+.endif
+
+.if (ATTINY==13)
+    .include "lib/t13.asm"
+.elseif (ATTINY==85)
+    .include "lib/t85.asm"
 .else
     .error "Unknown target!"
 .endif
-
-.if target_t13
-    .include "lib/t13.asm"
-.elseif target_t85
-    .include "lib/t85.asm"
-.endif
 .include "lib/macros.asm"
 
-; .ifc AVR, t13
-;     .error "t13"
-; .else
-;     .error "some other avr"
-; .endif
-
 ; Define which pins are used for which inputs of the TPH:
-.equ TPH_STROBE,    PB3
-.equ TPH_LATCH,     PB4
-.equ TPH_DATA,      PB0
-.equ TPH_CLK,       PB2
-.equ SENSE,         PB1
+.if (ATTINY==13)
+    .equ TPH_STROBE,    PB3
+    .equ TPH_LATCH,     PB4
+    .equ TPH_DATA,      PB0
+    .equ TPH_CLK,       PB2
+    .equ SENSE,         PB1     ; ATtiny13 has INT0 on PB1.
+.elseif (ATTINY==85)
+    .equ TPH_STROBE,    PB3
+    .equ TPH_LATCH,     PB4
+    .equ TPH_DATA,      PB0
+    .equ TPH_CLK,       PB1
+    .equ SENSE,         PB2     ; ATtiny85 has INT0 on PB2.
+.endif
 ; MASK bit versions of the above:
 .equ M_TPH_STROBE,  (1<<TPH_STROBE)
 .equ M_TPH_LATCH,   (1<<TPH_LATCH)
@@ -162,32 +198,57 @@
 .equ GH,            YH
 
 ; General parameters:
-.equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 9.6MHz on my ATtiny13A at 3.3V.
-.equ ACTIVE_TIMEOUT,54      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
-                            ; NOTE: /STROBE is not asserted for roughly first 0.15ms of this time;
-                            ; /STROBE is asserted for ROUGHLY (54*1024-1500)/9600000 seconds => 5.6ms.
-.equ IDLE_TIMEOUT,  79      ; The "Line IDLE window".
+.if (ATTINY==13)
+    .equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 9.6MHz on my ATtiny13A at 3.3V.
+    .equ ACTIVE_TIMEOUT,54      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
+                                ; NOTE: /STROBE is not asserted for roughly first 0.15ms of this time;
+                                ; /STROBE is asserted for ROUGHLY (54*1024-1500)/9600000 seconds => 5.6ms.
+    .equ IDLE_TIMEOUT,  79      ; The "Line IDLE window".
+    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/9600000 should give about 14.2ms per line, +/- clock error.
+.elseif (ATTINY==85)
+    .equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 8.0MHz on my ATtiny85 at 3.3V.
+    .equ ACTIVE_TIMEOUT,45      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
+                                ; NOTE: /STROBE is not asserted for roughly first 0.18ms of this time;
+                                ; /STROBE is asserted for ROUGHLY (45*1024-1500)/8000000 seconds => 5.57ms.
+    .equ IDLE_TIMEOUT,  66      ; The "Line IDLE window" => 8.45ms
+    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/8000000 should give about 14.2ms per line, +/- clock error.
+.endif
 
 
 ; ------------------------------- Interrupt table -------------------------------;
 
-; Starts at 0x0000. ATtiny13A has 10 interrupt vectors (inc. RESET):
+; Starts at 0x0000. ATtiny13A has 10 interrupt vectors (inc. RESET),
+; while ATtiny85 has 15, and they're aligned a little differently.
 .org 0x0000
 firmware_top:
 ; Reset vector comes first:
-    rjmp init
-; Interrupt no. 7 (Timer Compare Match A) does special handling depending on which step
-; of the repeating 14.4ms cycle it has reached. The other 8 interrupts all just return
-; without doing anything.
-    rjmp int0_isr               ; Interrupt Vector 2   = EXT_INT0   (External Interrupt Request 0)
-    reti                        ; Interrupt Vector 3   = PCINT0     (Pin Change)
-    reti                        ; Interrupt Vector 4   = TIM0_OVF   (Timer Overflow)
-    reti                        ; Interrupt Vector 5   = EE_RDY     (EEPROM Ready)
-    reti                        ; Interrupt Vector 6   = ANA_COMP   (Analog Comparator)
-    ijmp  ; Jump to Z address   ; Interrupt Vector 7   = TIM0_COMPA (Timer Compare Match A)
-    ;reti                        ; Interrupt Vector 8   = TIM0_COMPB (Timer Compare Match B)
-    ;reti                        ; Interrupt Vector 9   = WDT        (Watchdog Timeout)
-    ;reti                        ; Interrupt Vector 10  = ADC        (ADC Conversion Complete)
+    rjmp init                   ; RESET
+    rjmp int0_isr               ; EXT_INT0                  External Interrupt Request 0
+    reti                        ; PCINT0                    Pin Change
+.if (ATTINY==85)
+    reti                        ; TIM1_COMPA    (ATtiny85)  Timer/Counter 1 Compare Match A
+    reti                        ; TIM1_OVF      (ATtiny85)  Timer/Counter 1 Overflow
+.endif
+    reti                        ; TIM0_OVF                  Timer Overflow
+    reti                        ; EE_RDY                    EEPROM Ready
+    reti                        ; ANA_COMP                  Analog Comparator
+.if (ATTINY==85)
+    reti                        ; ADC           (ATtiny85)  ADC Conversion Complete
+    reti                        ; TIM1_COMPB    (ATtiny85)  Timer/Counter 1 Compare Match B
+.endif
+; "Timer Compare Match A" interrupt does special handling depending on which step
+; of the repeating 14.4ms cycle it has reached. 
+    ijmp  ; Jump to Z address   ; TIM0_COMPA                Timer Compare Match A
+    reti                        ; TIM0_COMPB                Timer Compare Match B
+    reti                        ; WDT                       Watchdog Timeout
+.if (ATTINY==13)
+    reti                        ; ADC           (ATtiny13)  ADC Conversion Complete
+.elseif (ATTINY==85)
+    reti                        ; USI_START     (ATtiny85)  USI START
+    reti                        ; USI_OVF       (ATtiny85)  USI Overflow
+.endif
+
+
 
 ; ------------------------------- Main Initialisation -------------------------------;
 
