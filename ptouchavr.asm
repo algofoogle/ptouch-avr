@@ -113,8 +113,26 @@
 ;       a falling edge, rather than when the pin is simply at a low level.
 ;
 
-.include "t13.asm"
-.include "macros.asm"
+.if target_t13
+    .print "*** Targeting ATtiny13(a)"
+.elseif target_t85
+    .print "*** Targeting ATtiny85"
+.else
+    .error "Unknown target!"
+.endif
+
+.if target_t13
+    .include "lib/t13.asm"
+.elseif target_t85
+    .include "lib/t85.asm"
+.endif
+.include "lib/macros.asm"
+
+; .ifc AVR, t13
+;     .error "t13"
+; .else
+;     .error "some other avr"
+; .endif
 
 ; Define which pins are used for which inputs of the TPH:
 .equ TPH_STROBE,    PB3
@@ -170,7 +188,6 @@ firmware_top:
     ;reti                        ; Interrupt Vector 8   = TIM0_COMPB (Timer Compare Match B)
     ;reti                        ; Interrupt Vector 9   = WDT        (Watchdog Timeout)
     ;reti                        ; Interrupt Vector 10  = ADC        (ADC Conversion Complete)
-
 
 ; ------------------------------- Main Initialisation -------------------------------;
 
@@ -395,7 +412,7 @@ more_lines_left:
 pixel_data:
 
     ; Import the hackaday.com logo (after conversion with ptconvert.rb):
-    .incbin "had-skull2.raw"
+    .incbin "images/had-skull2.raw"
 
 end_pixel_data:
 
