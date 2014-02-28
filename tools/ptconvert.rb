@@ -13,13 +13,16 @@ data that can be included directly into ptouchavr.asm.
 Usage: ruby ptconvert.rb [options] INFILE [OUTFILE]
 NOTE: OUTFILE defaults to image.* (ext. depending on format; .raw by default)
 EOH
+  o.on('-m', '--[no-]mirror', 'Mirror the image for 2-layer tapes (e.g. fabric)') do |v|
+    options[:mirror] = v
+  end
   o.on('-f', '--format FORMAT', [:raw, :pbm, :asm, :bp1, :bp2, :bp3, :bp4],
     'Output format. Options:',
     'raw (default), pbm, asm, bp1, bp2, bp3, bp4'
   ) do |v|
     options[:format] = v
   end
-  o.on('-d', '--displace OFFSET', 'Offset the image on the pixel axis (for bp* formats only') do |v|
+  o.on('-d', '--displace OFFSET', 'Offset the image on the pixel axis (for bp* formats only)') do |v|
     options[:displace] = v
   end
 end.parse!
@@ -73,11 +76,12 @@ begin
   if width == 64
     # Image is already 64 pixels wide, so we assume it is oriented the way the
     # TPH needs it. We just need to flip the pixels of each line:
-    image.map!(&:reverse)
+    image.map!(&:reverse) unless options[:mirror]
   elsif height == 64
     # Height is 64 pixels, and width is not, so we need to rotate it and THEN
     # flip it. This can be accomplished in one go by transposing:
     image = image.transpose
+    image.map!(&:reverse) if options[:mirror]
     width, height = height, width
   else
     raise "Image must have 64 pixels on one axis. Actual dimensions are: #{width}x#{height}"
