@@ -349,9 +349,33 @@ int0_isr:
 ;   execute all of steps 1--7 (which has been shown to be about 170uS). Hence, /STROBE
 ;   will be asserted for about a total of 5.6ms.
 ;
+;   Timing of key events is as follows on ATtiny13(A) vs ATtiny25/45/85 (with differences
+;   due to the default clocks of 9.6MHz and 8.0MHz respectively):
+;
+;   |                                              |              | ATtiny13        | ATtiny85        |       |
+;   | Event                                        | Nominal      | CLKs | Time     | CLKs | Time     | Count |
+;   |----------------------------------------------|--------------|------|----------|------|----------|-------|
+;   | line_active_isr init time                    |       N/A    |    2 |  0.208us |    2 |  0.250us |     1 |
+;   | Initial CLK line high time before first bit  |   9.000us[1] |   13 |  1.354us |   11 |  1.375us |     1 |
+;   | CLK line low or high time, per bit           |   1.000us    |   10 |  1.042us |    8 |  1.000us |   120 |
+;   | CLK line high between bytes                  |   8.750us    |   16 |  1.667us |   14 |  1.750us |     7 |
+;   | CLK line high after last bit, before falling |  11.250us[2] |   10 |  1.042us |    8 |  1.000us |     1 |
+;   | Delay before /LATCH pulse                    |   8.125us    |   80 |  8.333us |   65 |  8.125us |     1 |
+;   | Width of /LATCH pulse                        |   1.875us    |   20 |  2.083us |   17 |  2.125us |     1 |
+;   | Wait before /STROBE                          |   2.375us    |   23 |  2.396us |   20 |  2.500us |     1 |
+;
+;   Total line_active_isr time:
+;   *   ATtiny13:   152.083us (1460K @ 9.6MHz)
+;   *   ATtiny85:   147.625us (1181K @ 8.0MHz)
+;
+;   NOTES:
+;
+;   1.  Measured for PT-1010, but TPH works fine if this is much less (i.e. loop set-up and sync time, only).
+;   2.  Measured for PT-1010, but TPH works fine if this is only 1us.
+;
 
 line_active_isr:
-    ; Raise CLK for (a):
+    ; Raise CLK:
     sbi PORTB, TPH_CLK      ; 2K
 
     ; OK, so CLK has JUST gone high at this point...
@@ -382,13 +406,26 @@ next_bit:
     brcc spi_begin_bit      ; 2K if C clear (i.e. if DATA pin stays low)
     ; Need to make sure DATA pin will go high:
     ori OUT_BUFFER, M_TPH_DATA     ; 1K
+
 spi_begin_bit:
+
+.if (ATTINY==13)
+    ; NOTE: ATtiny13's default clock (9.6MHz) is slightly faster
+    ; so we need this extra wait in here to pad out to at least 1us.
     wait_2                  ; 2K
+.endif
     ; Write register-buffered pin states to PORTB, hence setting CLK and DATA states simultaneously:
     out PORTB, OUT_BUFFER   ; 1K
 
-    ; Now wait 10K and make CLK go high:
-    wait_8                  ; NOTE: Could do calculations here instead.
+    ; Now delay for at least 1us before we make CLK go high again:
+.if (ATTINY==13)
+    wait_8
+    ; NOTE: Could do calculations or other work here instead...?
+    ; Maybe do "sbrs DATA_BUFFER, 7" above, and "rol DATA_BUFFER" here?
+.else
+    ; Shorter delay here since ATtiny25/45/85 is slower:
+    wait_6
+.endif
     sbi PORTB, TPH_CLK      ; 2K
 
     ; Now check if we have any more bits left...
@@ -399,18 +436,35 @@ spi_begin_bit:
     dec BYTE_COUNT          ; 1K
     brne next_byte          ; 2K    Branch if more bytes are left.
 
-    ; Pull CLK low again.
+    ; All done...
+    ; Pull CLK low again after 1us in total has elapsed:
+.if (ATTINY==13)
     wait_4                  ; 4K
+.else
+    wait_2
+.endif
     cbi PORTB, TPH_CLK      ; 2K
 
-    ; Wait out R (80K), and then pulse /LATCH for 20K
-    micro_delay 26          ; 78K
+    ; Wait out the rear delay (about 8.125us), and then pulse /LATCH for about 1.875us:
+.if (ATTINY==13)
+    micro_delay 26          ; 78K (+2K) -> 8.333us on ATtiny13
+.else
+    micro_delay 21          ; 63K (+2K) -> 8.125us on ATtiny85
+.endif
     cbi PORTB, TPH_LATCH    ; 2K
-    micro_delay 6           ; 18K
+.if (ATTINY==13)
+    micro_delay 6           ; 18K (+2K) -> 2.083us on ATtiny13
+.else
+    micro_delay 5           ; 15K (+2K) -> 2.125us on ATtiny85
+.endif
     sbi PORTB, TPH_LATCH    ; 2K
 
-    ; Wait out W (23K) and then lower /STROBE
-    micro_delay 7           ; 21K
+    ; Wait out the period after /LATCH (about 2.375us), then lower /STROBE:
+.if (ATTINY==13)
+    micro_delay 7           ; 21K (+2K) -> 2.396us on ATtiny13
+.else
+    micro_delay 6           ; 18K (+2K) -> 2.500us on ATtiny85
+.endif
     cbi PORTB, TPH_STROBE   ; 2K
 
     ; At this point, /STROBE is now lowered, so prepare the next stage...
@@ -477,3 +531,20 @@ pixel_data:
 
 end_pixel_data:
 
+.equ firmware_size, end_pixel_data-firmware_top
+
+.if (firmware_size > 8192)
+    .error "Firmware is too large for the ATtiny range!"
+.elif (firmware_size > 1024 && ATTINY=13)
+    .error "Firmware is too large for intended ATtiny13(A) target!"
+.elif (firmware_size > 4096)
+    .print "Firmware requires ATtiny85."
+.elif (firmware_size > 2048)
+    .print "Firmware requires ATtiny45 or above."
+.elif (firmware_size > 1024)
+    .print "Firmware requires ATtiny25 or above."
+.elif (ATTINY==13)
+    .print "Firmware is suitable for ATtiny13(A)."
+.else
+    .print "Firmware is compiled for ATtiny25/45/85, but will fit on ATtiny13A if required."
+.endif

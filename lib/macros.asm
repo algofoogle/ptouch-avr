@@ -28,6 +28,11 @@
     wait_2  ; 2K
 .endm
 
+.macro wait_6
+    wait_3  ; 3K
+    wait_3  ; 3K
+.endm
+
 .macro wait_8
     wait_3  ; 3K
     wait_3  ; 3K
@@ -189,7 +194,13 @@
     .endif
     ; Enable the interrupt on OCF0A being set, but disable the rest:
     ldi r16, M_OCIE0A
-    out TIMSK0, r16
+    .ifdef TIMSK
+        ; Must be ATtiny25/45/85:
+        out TIMSK, r16
+    .else
+        ; No TIMSK -- only TIMSK0 -- so must be ATtiny13:
+        out TIMSK0, r16
+    .endif
     ; Reset timer value:
     clr r16
     out TCNT0, r16
@@ -217,6 +228,8 @@
 .equ sleep_adc,         0b01    ; ADC Noise Reduction mode.
 .equ sleep_powerdown,   0b10
 .macro enable_sleep mode=sleep_idle
+    ; NOTE: I'm pretty sure this read-modify-write sequence here is needed
+    ; so we can preserve the state of ISC[1:0] in MCUCR:
     in r16, MCUCR               ; Read current MCU Control Register state.
     andi r16, ~M_SM             ; Mask out SM[1:0] bits.
     ori r16, M_SE | (\mode<<3)  ; Turn on SE (Sleep Enable) bit, as well as SM[1:0] mode bits.

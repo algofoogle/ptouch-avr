@@ -1,7 +1,7 @@
 # --- Parameters (which are likely to change between projects or specific builds):
 
 # Device we're burning to (ATtiny13A):
-DEVICE=t13
+DEVICE=t85
 
 # Device used for burning:
 ISP=usbasp

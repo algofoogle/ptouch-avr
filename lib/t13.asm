@@ -72,7 +72,7 @@
 .equ SE,            5               ; Sleep Enable.
 .equ M_SE,          (1<<SE)
 
-; GTTCR (General Timer/Counter Control Register) bits (12.4.1):
+; GTCCR (General Timer/Counter Control Register) bits (12.4.1):
 .equ TSM,           7               ; Timer/Counter Sync Mode.
 .equ M_TSM,         (1<<TSM)
 .equ PSR10,         0               ; Prescaler Reset Timer/Counter0
