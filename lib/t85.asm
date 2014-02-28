@@ -15,6 +15,7 @@
 .equ TIMSK0, 0x1FFFF	; This should prevent code from accidentally using TIMSK0 (which is only valid on ATtiny13).
 .equ TCCR0A, 0x2a   	; Timer Control Register A.
 .equ OCR0A, 0x29    	; Timer/Counter Output Compare A.
+.equ GTCCR, 0x2c		; General Timer/Counter Control Register.
 
 ; TIMSK bits:
 .equ OCIE0A,        4               ; Timer/Counter0 Output Compare Match A Interrupt Enable

@@ -49,9 +49,18 @@
 ;
 ; Burning info::
 ;
-; ***    LOW fuse byte:  0x6A
-; ***    HIGH fuse byte: 0xFF
-; ***    EEPROM:         Not used
+;                       | ATtiny13(A) | ATtiny85 |
+;                       |-------------|----------|
+;   | LOW fuse byte:    |        0x6A |     0x62 |
+;   | HIGH fuse byte:   |        0xFF |     0xDF |
+;   | Ext'd fuse byte:  |           - |     0xFF |
+;
+;   EEPROM: Not used
+;
+;   NOTE: Fuse bit assignments are quite different between these devices,
+;   and the default settings given above enable effectively the same options
+;   across both devices.
+;
 ;
 ; Usage info::
 ;
@@ -202,16 +211,19 @@
     .equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 9.6MHz on my ATtiny13A at 3.3V.
     .equ ACTIVE_TIMEOUT,54      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
                                 ; NOTE: /STROBE is not asserted for roughly first 0.15ms of this time;
-                                ; /STROBE is asserted for ROUGHLY (54*1024-1500)/9600000 seconds => 5.6ms.
-    .equ IDLE_TIMEOUT,  79      ; The "Line IDLE window".
-    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/9600000 should give about 14.2ms per line, +/- clock error.
+                                ; /STROBE is asserted for ROUGHLY (54*1024-1460)/9600000 seconds => 5.6ms.
+    .equ IDLE_TIMEOUT,  79      ; The "Line IDLE window"
+    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/9600000 should give about 14.19ms per line, +/- clock error.
 .elseif (ATTINY==85)
-    .equ OSCCAL_TARGET, 0x6F    ; OSCCAL value of 0x6F seems to be closest to 8.0MHz on my ATtiny85 at 3.3V.
-    .equ ACTIVE_TIMEOUT,45      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
+    .equ OSCCAL_TARGET, 0x94    ; OSCCAL value of 0x94 seems to be closest to 8.0MHz on my ATtiny85 at 3.3V.
+    .equ ACTIVE_TIMEOUT,44      ; The "Line ACTIVE window", counted in multiples of 1024 CPU clocks.
                                 ; NOTE: /STROBE is not asserted for roughly first 0.18ms of this time;
-                                ; /STROBE is asserted for ROUGHLY (45*1024-1500)/8000000 seconds => 5.57ms.
-    .equ IDLE_TIMEOUT,  66      ; The "Line IDLE window" => 8.45ms
-    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/8000000 should give about 14.2ms per line, +/- clock error.
+                                ; /STROBE is asserted for ROUGHLY (45*1024-1181)/8000000 seconds => 5.6ms.
+    .equ IDLE_TIMEOUT,  65      ; The "Line IDLE window".
+    ; NOTE: (ACTIVE_TIMEOUT+IDLE_TIMEOUT)*1024/8000000 should give about 14.21ms per line, +/- clock error.
+    ; NOTE: My observation is actually that the two _TIMEOUT values should be one LESS than
+    ; your target... I'm not sure why. Maybe I have read the datasheet incorrectly? Maybe it's not when
+    ; the count is reached, but rather upon the NEXT timer tick, that the interrupt is fired...?
 .endif
 
 
